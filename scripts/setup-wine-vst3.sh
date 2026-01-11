@@ -1,6 +1,6 @@
 #!/bin/bash
-# Wine-GE + PipeWine Setup for Windows VST3 on Linux
-# Target: Ubuntu 24.04+ (PipeWire default)
+# Yabridge Setup for Windows VST3 on Linux
+# Target: Ubuntu 24.04+
 # https://github.com/ekg/rack
 set -e
 
@@ -14,7 +14,7 @@ log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
 echo "==========================================="
-echo " Wine-GE + PipeWine Setup for VST3"
+echo " Yabridge Setup for Windows VST3"
 echo " Target: Ubuntu 24.04+"
 echo "==========================================="
 echo ""
@@ -25,7 +25,7 @@ if [ "$EUID" -eq 0 ]; then
     exit 1
 fi
 
-# Detect distro and version
+# Detect distro
 if [ -f /etc/os-release ]; then
     . /etc/os-release
     DISTRO=$ID
@@ -37,137 +37,75 @@ fi
 
 log_info "Detected: $DISTRO $VERSION"
 
-# Check for Ubuntu 24.04+
-if [ "$DISTRO" = "ubuntu" ]; then
-    MAJOR_VERSION=$(echo "$VERSION" | cut -d. -f1)
-    if [ "$MAJOR_VERSION" -lt 24 ]; then
-        log_warn "Ubuntu $VERSION detected. This script is optimized for 24.04+"
-        log_warn "Older versions may need additional PipeWire setup."
-    fi
-fi
-
-# Install dependencies based on distro
-log_info "[1/7] Installing dependencies..."
+# Step 1: Install Wine
+log_info "[1/4] Installing Wine..."
 case $DISTRO in
     ubuntu|pop)
-        # Ubuntu 24.04+ has PipeWire by default
         sudo dpkg --add-architecture i386
         sudo apt update
-        sudo apt install -y \
-            wine \
-            wine64 \
-            libwine:i386 \
-            winetricks \
-            libpipewire-0.3-dev \
-            libjack-jackd2-dev \
-            build-essential \
-            git \
-            flatpak
+        sudo apt install -y wine wine64 winetricks
         ;;
     debian)
+        sudo dpkg --add-architecture i386
         sudo apt update
-        sudo apt install -y \
-            wine64 \
-            wine32 \
-            winetricks \
-            pipewire \
-            libpipewire-0.3-dev \
-            build-essential \
-            git \
-            flatpak
+        sudo apt install -y wine wine64 winetricks
         ;;
     fedora)
-        sudo dnf install -y \
-            wine \
-            winetricks \
-            pipewire-devel \
-            @development-tools \
-            git \
-            flatpak
+        sudo dnf install -y wine winetricks
         ;;
     arch|manjaro)
-        sudo pacman -Sy --noconfirm \
-            wine \
-            winetricks \
-            pipewire \
-            lib32-pipewire \
-            base-devel \
-            git \
-            flatpak
+        sudo pacman -Sy --noconfirm wine winetricks
         ;;
     *)
-        log_warn "Unknown distro '$DISTRO'. Install manually: wine winetricks libpipewire-dev git"
+        log_warn "Unknown distro. Install wine and winetricks manually."
         ;;
 esac
 
-# Setup realtime permissions
-log_info "[2/7] Configuring realtime audio permissions..."
-sudo usermod -aG audio $USER 2>/dev/null || true
+# Step 2: Install yabridge
+log_info "[2/4] Installing yabridge..."
+YABRIDGE_VERSION="5.1.1"
+YABRIDGE_URL="https://github.com/robbert-vdh/yabridge/releases/download/${YABRIDGE_VERSION}/yabridge-${YABRIDGE_VERSION}.tar.gz"
 
-# Optional realtime group for lower latency
-sudo groupadd -f realtime 2>/dev/null || true
-sudo usermod -aG realtime $USER 2>/dev/null || true
+mkdir -p ~/.local/share/yabridge
+cd /tmp
+curl -LO "$YABRIDGE_URL"
+tar -xzf "yabridge-${YABRIDGE_VERSION}.tar.gz" -C ~/.local/share/yabridge --strip-components=1
+rm "yabridge-${YABRIDGE_VERSION}.tar.gz"
 
-if [ ! -f /etc/security/limits.d/99-realtime.conf ]; then
-    echo '@realtime - rtprio 99
-@realtime - memlock unlimited' | sudo tee /etc/security/limits.d/99-realtime.conf
+# Add to PATH
+if ! grep -q 'yabridge' ~/.bashrc 2>/dev/null; then
+    echo 'export PATH="$HOME/.local/share/yabridge:$PATH"' >> ~/.bashrc
 fi
+export PATH="$HOME/.local/share/yabridge:$PATH"
 
-# Install Flatpak and ProtonUp-Qt
-log_info "[3/7] Installing ProtonUp-Qt..."
-flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo 2>/dev/null || true
-flatpak install -y flathub net.davidotek.pupgui2 2>/dev/null || log_warn "ProtonUp-Qt may already be installed"
-
-# Build and install PipeWine
-log_info "[4/7] Building PipeWine..."
-PIPEWINE_DIR="/tmp/pipewine-$$"
-git clone https://github.com/alex190291/pipewine.git "$PIPEWINE_DIR"
-cd "$PIPEWINE_DIR"
-make 64
-
-log_info "[5/7] Installing PipeWine..."
-sudo ./install-pipewine.sh || log_warn "PipeWine install script had issues"
-
-# Setup Wine prefix
-log_info "[6/7] Creating Wine prefix..."
+# Step 3: Setup Wine prefix
+log_info "[3/4] Setting up Wine prefix..."
 export WINEPREFIX=~/.wine-vst3
 export WINEARCH=win64
 
-# Initialize Wine prefix (suppress GUI if no display)
-if [ -z "$DISPLAY" ]; then
-    wineboot --init 2>/dev/null || true
-else
-    wineboot --init
-fi
-
-# Install VC++ runtime
-log_info "[7/7] Installing Visual C++ runtime..."
+wineboot --init 2>/dev/null || wineboot --init
 winetricks -q vcrun2019 2>/dev/null || log_warn "vcrun2019 may need manual install"
 
 # Create VST3 directory
 mkdir -p "$WINEPREFIX/drive_c/Program Files/Common Files/VST3"
 
-# Register ASIO driver
-cd "$PIPEWINE_DIR"
-wine64 regsvr32 wineasio.dll 2>/dev/null || log_warn "ASIO registration may need manual step"
-
-# Cleanup
-rm -rf "$PIPEWINE_DIR"
+# Step 4: Configure yabridge
+log_info "[4/4] Configuring yabridge..."
+yabridgectl add "$WINEPREFIX/drive_c/Program Files/Common Files/VST3"
+yabridgectl sync
 
 echo ""
 echo "==========================================="
 echo -e "${GREEN} Setup Complete!${NC}"
 echo "==========================================="
 echo ""
-echo "IMPORTANT: Log out and back in for group changes!"
-echo ""
 echo "Wine prefix:  ~/.wine-vst3"
 echo "VST3 path:    ~/.wine-vst3/drive_c/Program Files/Common Files/VST3/"
 echo ""
 echo "To install Windows VST3 plugins:"
-echo "  cp -r /path/to/plugin.vst3 ~/.wine-vst3/drive_c/Program\\ Files/Common\\ Files/VST3/"
+echo "  1. Copy plugin: cp -r plugin.vst3 ~/.wine-vst3/drive_c/Program\\ Files/Common\\ Files/VST3/"
+echo "  2. Sync yabridge: yabridgectl sync"
 echo ""
-echo "To install Wine-GE (recommended for better compatibility):"
-echo "  flatpak run net.davidotek.pupgui2"
-echo "  -> Select 'Lutris' -> Add version -> Wine-GE -> Install"
+echo "Yabridge creates Linux wrappers in: ~/.vst3/yabridge/"
+echo "These can be loaded by any Linux DAW or rack."
 echo ""
