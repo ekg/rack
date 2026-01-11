@@ -187,6 +187,9 @@ struct AudioBusBuffers {
     };
 };
 
+// Forward declarations
+class IEventList;
+
 // Process data
 struct ProcessData {
     int32 processMode;
@@ -198,9 +201,126 @@ struct ProcessData {
     AudioBusBuffers* outputs;
     void* inputParameterChanges;
     void* outputParameterChanges;
-    void* inputEvents;
-    void* outputEvents;
+    IEventList* inputEvents;
+    IEventList* outputEvents;
     void* processContext;
+};
+
+// ============================================================================
+// VST3 Event structures for MIDI
+// ============================================================================
+
+// Note-on event
+struct NoteOnEvent {
+    int16 channel;      // channel index in event bus
+    int16 pitch;        // range [0, 127]
+    float tuning;       // 1.f = +1 cent
+    float velocity;     // range [0.0, 1.0]
+    int32 length;       // in sample frames
+    int32 noteId;       // note identifier (-1 if not available)
+};
+
+// Note-off event
+struct NoteOffEvent {
+    int16 channel;
+    int16 pitch;
+    float velocity;
+    int32 noteId;
+    float tuning;
+};
+
+// Poly pressure event
+struct PolyPressureEvent {
+    int16 channel;
+    int16 pitch;
+    float pressure;     // range [0.0, 1.0]
+    int32 noteId;
+};
+
+// Legacy MIDI CC event
+struct LegacyMIDICCOutEvent {
+    uint8 controlNumber;
+    int8 channel;
+    int8 value;
+    int8 value2;        // for pitch bend
+};
+
+// Event types
+enum EventTypes {
+    kNoteOnEvent = 0,
+    kNoteOffEvent = 1,
+    kDataEvent = 2,
+    kPolyPressureEvent = 3,
+    kLegacyMIDICCOutEvent = 65535
+};
+
+// Event flags
+enum EventFlags {
+    kIsLive = 1 << 0
+};
+
+// Event structure (union of all event types)
+struct Event {
+    int32 busIndex;         // event bus index
+    int32 sampleOffset;     // sample frames offset
+    double ppqPosition;     // position in project
+    uint16 flags;           // EventFlags
+    uint16 type;            // EventTypes
+
+    union {
+        NoteOnEvent noteOn;
+        NoteOffEvent noteOff;
+        PolyPressureEvent polyPressure;
+        LegacyMIDICCOutEvent midiCCOut;
+    };
+};
+
+// IEventList {3A2C4214-3463-49FE-B2C4-F397B9695A44}
+// COM bytes: 14 42 2C 3A  63 34  FE 49  B2 C4 F3 97 B9 69 5A 44
+static const TUID IEventList_iid = {
+    0x14, 0x42, 0x2C, 0x3A, 0x63, 0x34, 0xFE, 0x49,
+    0xB2, 0xC4, 0xF3, 0x97, 0xB9, 0x69, 0x5A, 0x44
+};
+
+class IEventList : public FUnknown {
+public:
+    virtual int32 getEventCount() = 0;
+    virtual tresult getEvent(int32 index, Event& e) = 0;
+    virtual tresult addEvent(Event& e) = 0;
+};
+
+// Simple EventList implementation for host
+#define MAX_EVENTS 256
+
+class HostEventList : public IEventList {
+public:
+    Event events[MAX_EVENTS];
+    int32 count = 0;
+
+    // FUnknown
+    tresult queryInterface(const TUID&, void** obj) override {
+        *obj = nullptr;
+        return kNoInterface;
+    }
+    uint32 addRef() override { return 1; }
+    uint32 release() override { return 1; }
+
+    // IEventList
+    int32 getEventCount() override { return count; }
+
+    tresult getEvent(int32 index, Event& e) override {
+        if (index < 0 || index >= count) return kResultFalse;
+        e = events[index];
+        return kResultOk;
+    }
+
+    tresult addEvent(Event& e) override {
+        if (count >= MAX_EVENTS) return kResultFalse;
+        events[count++] = e;
+        return kResultOk;
+    }
+
+    void clear() { count = 0; }
 };
 
 // IAudioProcessor
@@ -315,6 +435,10 @@ static PluginState g_plugin;
 static HANDLE g_shm_handle = nullptr;
 static void* g_shm_ptr = nullptr;
 static size_t g_shm_size = 0;
+
+// Event list for MIDI
+static Steinberg::HostEventList g_input_events;
+static Steinberg::HostEventList g_output_events;
 
 // ============================================================================
 // Helpers
@@ -774,9 +898,15 @@ bool process_audio(uint32_t num_samples) {
     data.numOutputs = 1;
     data.inputs = &inputs;
     data.outputs = &outputs;
+    data.inputEvents = &g_input_events;
+    data.outputEvents = &g_output_events;
 
     // Process
     Steinberg::tresult result = g_plugin.processor->process(data);
+
+    // Clear events after processing
+    g_input_events.clear();
+    g_output_events.clear();
 
     return result == Steinberg::kResultOk;
 }
@@ -912,6 +1042,65 @@ bool handle_command(SOCKET client, const RackWineHeader* header, const uint8_t* 
             const CmdParam* cmd = (const CmdParam*)payload;
             Steinberg::tresult result = g_plugin.controller->setParamNormalized(cmd->param_id, cmd->value);
             return send_response(client, result == Steinberg::kResultOk ? STATUS_OK : STATUS_ERROR, nullptr, 0);
+        }
+
+        case CMD_SEND_MIDI: {
+            if (!g_plugin.loaded) {
+                return send_response(client, STATUS_NOT_LOADED, nullptr, 0);
+            }
+            if (header->payload_size < sizeof(CmdMidi)) {
+                return send_response(client, STATUS_INVALID_PARAM, nullptr, 0);
+            }
+            const CmdMidi* cmd = (const CmdMidi*)payload;
+            const MidiEvent* events = (const MidiEvent*)(payload + sizeof(CmdMidi));
+
+            // Convert MIDI events to VST3 events
+            for (uint32_t i = 0; i < cmd->num_events && i < MAX_EVENTS; i++) {
+                const MidiEvent* me = &events[i];
+                uint8_t status = me->data[0];
+                uint8_t data1 = me->data[1];
+                uint8_t data2 = me->data[2];
+                uint8_t type = status & 0xF0;
+                uint8_t channel = status & 0x0F;
+
+                Steinberg::Event e;
+                memset(&e, 0, sizeof(e));
+                e.busIndex = 0;
+                e.sampleOffset = me->sample_offset;
+                e.flags = Steinberg::kIsLive;
+
+                if (type == 0x90 && data2 > 0) {
+                    // Note On
+                    e.type = Steinberg::kNoteOnEvent;
+                    e.noteOn.channel = channel;
+                    e.noteOn.pitch = data1;
+                    e.noteOn.velocity = data2 / 127.0f;
+                    e.noteOn.tuning = 0.0f;
+                    e.noteOn.length = 0;
+                    e.noteOn.noteId = -1;
+                    g_input_events.addEvent(e);
+                } else if (type == 0x80 || (type == 0x90 && data2 == 0)) {
+                    // Note Off
+                    e.type = Steinberg::kNoteOffEvent;
+                    e.noteOff.channel = channel;
+                    e.noteOff.pitch = data1;
+                    e.noteOff.velocity = data2 / 127.0f;
+                    e.noteOff.tuning = 0.0f;
+                    e.noteOff.noteId = -1;
+                    g_input_events.addEvent(e);
+                } else if (type == 0xA0) {
+                    // Poly Pressure (Aftertouch)
+                    e.type = Steinberg::kPolyPressureEvent;
+                    e.polyPressure.channel = channel;
+                    e.polyPressure.pitch = data1;
+                    e.polyPressure.pressure = data2 / 127.0f;
+                    e.polyPressure.noteId = -1;
+                    g_input_events.addEvent(e);
+                }
+                // CC, pitch bend, etc. handled through parameters in VST3
+            }
+            printf("[HOST] Received %u MIDI events, queued %d\n", cmd->num_events, g_input_events.count);
+            return send_response(client, STATUS_OK, nullptr, 0);
         }
 
         case CMD_INIT_AUDIO: {

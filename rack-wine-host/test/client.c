@@ -401,8 +401,50 @@ int main(int argc, char* argv[]) {
     }
     printf("  OK\n\n");
 
-    // Test 8: SHUTDOWN
-    printf("Test 8: SHUTDOWN\n");
+    // Test 8: MIDI events
+    printf("Test 8: MIDI events\n");
+    {
+        // Send a Note On and Note Off
+        uint8_t midi_buf[sizeof(CmdMidi) + 2 * sizeof(MidiEvent)];
+        CmdMidi* cmd = (CmdMidi*)midi_buf;
+        MidiEvent* events = (MidiEvent*)(midi_buf + sizeof(CmdMidi));
+
+        cmd->num_events = 2;
+
+        // Note On: channel 0, note 60 (middle C), velocity 100
+        events[0].sample_offset = 0;
+        events[0].data[0] = 0x90;  // Note On, channel 0
+        events[0].data[1] = 60;    // Note number
+        events[0].data[2] = 100;   // Velocity
+        events[0].data[3] = 0;
+
+        // Note Off: channel 0, note 60
+        events[1].sample_offset = 256;
+        events[1].data[0] = 0x80;  // Note Off, channel 0
+        events[1].data[1] = 60;    // Note number
+        events[1].data[2] = 0;     // Velocity
+        events[1].data[3] = 0;
+
+        if (send_command(CMD_SEND_MIDI, midi_buf, sizeof(midi_buf)) < 0) { result = 1; goto cleanup; }
+        if (recv_response(&resp, payload_buf, sizeof(payload_buf)) < 0) { result = 1; goto cleanup; }
+        if (resp.status != STATUS_OK) {
+            printf("  FAILED to send MIDI (status=%u)\n", resp.status);
+            result = 1; goto cleanup;
+        }
+        printf("  Sent Note On/Off\n");
+
+        // Process a block to consume the events
+        fill_test_input(512);
+        CmdProcessAudio proc_cmd;
+        proc_cmd.num_samples = 512;
+        if (send_command(CMD_PROCESS_AUDIO, &proc_cmd, sizeof(proc_cmd)) < 0) { result = 1; goto cleanup; }
+        if (recv_response(&resp, payload_buf, sizeof(payload_buf)) < 0) { result = 1; goto cleanup; }
+        printf("  Events processed\n");
+    }
+    printf("  OK\n\n");
+
+    // Test 9: SHUTDOWN
+    printf("Test 9: SHUTDOWN\n");
     if (send_command(CMD_SHUTDOWN, NULL, 0) < 0) { result = 1; goto cleanup; }
     if (recv_response(&resp, payload_buf, sizeof(payload_buf)) < 0) { result = 1; goto cleanup; }
     printf("  OK\n\n");
