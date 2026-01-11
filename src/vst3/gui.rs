@@ -1,12 +1,14 @@
-//! Safe wrapper for VST3 GUI functionality on Linux/X11
+//! Safe wrapper for VST3 GUI functionality
 //!
 //! This module provides safe, idiomatic Rust API for creating and managing
-//! VST3 plugin GUIs on Linux using X11.
+//! VST3 plugin GUIs. Supports:
+//! - Linux: X11 window embedding
+//! - Windows: HWND window embedding
 //!
 //! # Thread Safety
 //!
 //! **IMPORTANT**: All GUI operations must be called from the main thread.
-//! This is an X11 requirement. The type system cannot enforce this,
+//! This is an X11/Windows requirement. The type system cannot enforce this,
 //! so it is the caller's responsibility.
 //!
 //! # Example
@@ -45,14 +47,14 @@ use crate::error::{Error, Result};
 use std::ffi::CString;
 use std::marker::PhantomData;
 
-/// VST3 GUI handle for Linux/X11
+/// VST3 GUI handle
 ///
 /// Represents a plugin's graphical user interface. The GUI is displayed
-/// in a standalone X11 window.
+/// in a standalone window (X11 on Linux, HWND on Windows).
 ///
 /// # Thread Safety
 ///
-/// **All methods must be called from the main thread.** This is an X11
+/// **All methods must be called from the main thread.** This is an X11/Windows
 /// requirement that cannot be enforced by the type system.
 ///
 /// The type is `Send` but not `Sync` - it can be transferred between threads
@@ -87,7 +89,7 @@ impl Vst3Gui {
     ///
     /// A new `Vst3Gui` on success, or an error if:
     /// - The plugin doesn't support GUI
-    /// - X11 display couldn't be opened
+    /// - Display/window system couldn't be opened
     /// - Window creation failed
     ///
     /// # Thread Safety
@@ -109,7 +111,7 @@ impl Vst3Gui {
             let handle = ffi::rack_vst3_gui_create(plugin.as_ptr());
             if handle.is_null() {
                 return Err(Error::Other(
-                    "Failed to create GUI: plugin may not support GUI or X11 unavailable".into(),
+                    "Failed to create GUI: plugin may not support GUI or display unavailable".into(),
                 ));
             }
             Ok(Self {
@@ -231,10 +233,10 @@ impl Vst3Gui {
         Ok((width, height))
     }
 
-    /// Process pending X11 events
+    /// Process pending GUI events
     ///
     /// This must be called regularly to keep the GUI responsive. It processes
-    /// events like window resize, expose, focus changes, and close requests.
+    /// events like window resize, expose/paint, focus changes, and close requests.
     ///
     /// # Returns
     ///
@@ -263,13 +265,13 @@ impl Vst3Gui {
         unsafe { ffi::rack_vst3_gui_pump_events(self.handle) }
     }
 
-    /// Get the X11 window ID
+    /// Get the native window ID
     ///
     /// This can be used for embedding the GUI window in a host application.
     ///
     /// # Returns
     ///
-    /// The X11 window ID, or 0 if not available.
+    /// The native window ID (X11 Window on Linux, HWND on Windows), or 0 if not available.
     ///
     /// # Thread Safety
     ///

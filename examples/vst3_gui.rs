@@ -1,9 +1,10 @@
-//! VST3 Plugin GUI Example (Linux/X11)
+//! VST3 Plugin GUI Example
 //!
-//! This example demonstrates how to create and display a VST3 plugin's GUI on Linux.
+//! This example demonstrates how to create and display a VST3 plugin's GUI.
+//! Supports both Linux (X11) and Windows (HWND).
 //!
-//! **IMPORTANT**: This example must be run on the main thread. X11 requires
-//! the main thread for all GUI operations.
+//! **IMPORTANT**: This example must be run on the main thread. Both X11 and
+//! Windows require the main thread for GUI operations.
 //!
 //! # Usage
 //!
@@ -13,16 +14,19 @@
 //!
 //! # Requirements
 //!
-//! - Linux with X11
+//! - Linux with X11, or Windows
 //! - At least one VST3 plugin installed (e.g., Surge XT)
-//! - X11 development libraries: `sudo apt-get install libx11-dev`
+//! - Linux only: X11 development libraries: `sudo apt-get install libx11-dev`
 
 use rack::prelude::*;
 use std::time::Duration;
 
 fn main() -> Result<()> {
+    #[cfg(target_os = "linux")]
     println!("VST3 Plugin GUI Example (Linux/X11)");
-    println!("====================================\n");
+    #[cfg(target_os = "windows")]
+    println!("VST3 Plugin GUI Example (Windows/HWND)");
+    println!("======================================\n");
 
     // Create scanner
     println!("Creating VST3 scanner...");
@@ -90,10 +94,17 @@ fn main() -> Result<()> {
         }
         Err(e) => {
             println!("  Failed to create GUI: {}", e);
-            println!("\nNote: Some plugins don't support GUI on Linux, or");
-            println!("they may require specific X11 libraries. Ensure you have:");
-            println!("  libx11-xcb-dev libxcb-util-dev libxcb-cursor-dev");
-            println!("  libxcb-xkb-dev libxkbcommon-dev libxkbcommon-x11-dev");
+            #[cfg(target_os = "linux")]
+            {
+                println!("\nNote: Some plugins don't support GUI on Linux, or");
+                println!("they may require specific X11 libraries. Ensure you have:");
+                println!("  libx11-xcb-dev libxcb-util-dev libxcb-cursor-dev");
+                println!("  libxcb-xkb-dev libxkbcommon-dev libxkbcommon-x11-dev");
+            }
+            #[cfg(target_os = "windows")]
+            {
+                println!("\nNote: Some plugins don't support GUI on Windows.");
+            }
             return Err(e);
         }
     };
@@ -103,10 +114,13 @@ fn main() -> Result<()> {
         println!("  GUI size: {}x{} pixels", width, height);
     }
 
-    // Get X11 window ID
+    // Get native window ID
     let window_id = gui.get_window_id();
     if window_id != 0 {
+        #[cfg(target_os = "linux")]
         println!("  X11 window ID: 0x{:x}", window_id);
+        #[cfg(target_os = "windows")]
+        println!("  HWND: 0x{:x}", window_id);
     }
 
     // Show the window
@@ -119,10 +133,10 @@ fn main() -> Result<()> {
     println!("Close the window or press Ctrl+C to exit.");
     println!("========================================\n");
 
-    // Event loop - process X11 events
+    // Event loop - process GUI events
     println!("Running event loop...");
     loop {
-        // Process pending X11 events
+        // Process pending GUI events
         let events = gui.pump_events();
         if events < 0 {
             println!("Error processing events: {}", events);
@@ -140,7 +154,7 @@ fn main() -> Result<()> {
     }
 
     println!("\nCleaning up...");
-    // GUI will be dropped here, cleaning up X11 resources
+    // GUI will be dropped here, cleaning up native window resources
 
     println!("Example complete!");
 
