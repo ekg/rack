@@ -23,7 +23,7 @@ $(TARGET): $(SRC) include/protocol.h
 	@echo "Built $(TARGET)"
 
 $(TEST_CLIENT): test/client.c include/protocol.h
-	$(CC_LINUX) $(CFLAGS_LINUX) -o $@ test/client.c
+	$(CC_LINUX) $(CFLAGS_LINUX) -o $@ test/client.c -lm
 	@echo "Built $(TEST_CLIENT)"
 
 client: $(TEST_CLIENT)

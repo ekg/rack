@@ -1,5 +1,5 @@
 // rack-wine-host: Windows VST3 plugin host for Wine
-// Phase 2: TCP socket server for IPC with Linux
+// Phase 3: Shared memory audio processing
 
 #include <winsock2.h>
 #include <windows.h>
@@ -7,11 +7,12 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
+#include <math.h>
 
 #include "../include/protocol.h"
 
 // ============================================================================
-// VST3 Types (minimal subset)
+// VST3 Types and Interfaces
 // ============================================================================
 
 namespace Steinberg {
@@ -26,10 +27,15 @@ typedef int64_t int64;
 typedef uint64_t uint64;
 typedef int32 tresult;
 typedef char char8;
+typedef char16_t char16;
 
 struct TUID {
     uint8 data[16];
 };
+
+inline bool operator==(const TUID& a, const TUID& b) {
+    return memcmp(a.data, b.data, 16) == 0;
+}
 
 class FUnknown {
 public:
@@ -38,7 +44,7 @@ public:
     virtual uint32 release() = 0;
 };
 
-enum { kResultOk = 0, kResultFalse = 1, kNoInterface = -1 };
+enum { kResultOk = 0, kResultFalse = 1, kNoInterface = -1, kNotImplemented = -2 };
 
 struct PClassInfo {
     TUID cid;
@@ -66,14 +72,42 @@ struct PFactoryInfo {
     int32 flags;
 };
 
+// Interface IDs - stored in COM GUID format for Windows
+// COM format: Data1 (LE 32-bit), Data2 (LE 16-bit), Data3 (LE 16-bit), Data4 (8 bytes big-endian)
+
+// IPluginFactory {7A4D811C-5211-4A1F-AED9-D2EE0B43BF9F}
+// COM bytes: 1C 81 4D 7A  11 52  1F 4A  AE D9 D2 EE 0B 43 BF 9F
 static const TUID IPluginFactory_iid = {
-    0x7A, 0x4D, 0x81, 0x1C, 0x52, 0x11, 0x4A, 0x1F,
+    0x1C, 0x81, 0x4D, 0x7A, 0x11, 0x52, 0x1F, 0x4A,
     0xAE, 0xD9, 0xD2, 0xEE, 0x0B, 0x43, 0xBF, 0x9F
 };
 
+// IPluginFactory2 {0007B650-F24B-4C0B-A464-EDB9F00B2ABB}
+// COM bytes: 50 B6 07 00  4B F2  0B 4C  A4 64 ED B9 F0 0B 2A BB
 static const TUID IPluginFactory2_iid = {
-    0x00, 0x07, 0xB6, 0x50, 0xF2, 0x4B, 0x4C, 0x0B,
+    0x50, 0xB6, 0x07, 0x00, 0x4B, 0xF2, 0x0B, 0x4C,
     0xA4, 0x64, 0xED, 0xB9, 0xF0, 0x0B, 0x2A, 0xBB
+};
+
+// IComponent {E831FF31-F2D5-4301-928E-BBEE25697802}
+// COM bytes: 31 FF 31 E8  D5 F2  01 43  92 8E BB EE 25 69 78 02
+static const TUID IComponent_iid = {
+    0x31, 0xFF, 0x31, 0xE8, 0xD5, 0xF2, 0x01, 0x43,
+    0x92, 0x8E, 0xBB, 0xEE, 0x25, 0x69, 0x78, 0x02
+};
+
+// IAudioProcessor {42043F99-B7DA-453C-A569-E79D9AAEC33D}
+// COM bytes: 99 3F 04 42  DA B7  3C 45  A5 69 E7 9D 9A AE C3 3D
+static const TUID IAudioProcessor_iid = {
+    0x99, 0x3F, 0x04, 0x42, 0xDA, 0xB7, 0x3C, 0x45,
+    0xA5, 0x69, 0xE7, 0x9D, 0x9A, 0xAE, 0xC3, 0x3D
+};
+
+// FUnknown {00000000-0000-0000-C000-000000000046}
+// COM bytes: 00 00 00 00  00 00  00 00  C0 00 00 00 00 00 00 46
+static const TUID FUnknown_iid = {
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46
 };
 
 class IPluginFactory : public FUnknown {
@@ -89,6 +123,93 @@ public:
     virtual tresult getClassInfo2(int32 index, PClassInfo2* info) = 0;
 };
 
+// IPluginBase
+class IPluginBase : public FUnknown {
+public:
+    virtual tresult initialize(FUnknown* context) = 0;
+    virtual tresult terminate() = 0;
+};
+
+// Bus types and directions
+enum MediaType { kAudio = 0, kEvent = 1 };
+enum BusDirection { kInput = 0, kOutput = 1 };
+enum BusType { kMain = 0, kAux = 1 };
+
+struct BusInfo {
+    MediaType mediaType;
+    BusDirection direction;
+    int32 channelCount;
+    char16 name[128];
+    BusType busType;
+    uint32 flags;
+};
+
+// IComponent
+class IComponent : public IPluginBase {
+public:
+    virtual tresult getControllerClassId(TUID& classId) = 0;
+    virtual tresult setIoMode(int32 mode) = 0;
+    virtual int32 getBusCount(MediaType type, BusDirection dir) = 0;
+    virtual tresult getBusInfo(MediaType type, BusDirection dir, int32 index, BusInfo& bus) = 0;
+    virtual tresult getRoutingInfo(void* inInfo, void* outInfo) = 0;
+    virtual tresult activateBus(MediaType type, BusDirection dir, int32 index, uint8 state) = 0;
+    virtual tresult setActive(uint8 state) = 0;
+    virtual tresult setState(void* state) = 0;
+    virtual tresult getState(void* state) = 0;
+};
+
+// Speaker arrangements
+typedef uint64 SpeakerArrangement;
+static const SpeakerArrangement kStereo = 0x3;  // L + R
+
+// Process setup
+struct ProcessSetup {
+    int32 processMode;      // 0 = realtime, 1 = prefetch, 2 = offline
+    int32 symbolicSampleSize; // 0 = 32-bit float, 1 = 64-bit double
+    int32 maxSamplesPerBlock;
+    double sampleRate;
+};
+
+// Audio bus buffers
+struct AudioBusBuffers {
+    int32 numChannels;
+    uint64 silenceFlags;
+    union {
+        float** channelBuffers32;
+        double** channelBuffers64;
+    };
+};
+
+// Process data
+struct ProcessData {
+    int32 processMode;
+    int32 symbolicSampleSize;
+    int32 numSamples;
+    int32 numInputs;
+    int32 numOutputs;
+    AudioBusBuffers* inputs;
+    AudioBusBuffers* outputs;
+    void* inputParameterChanges;
+    void* outputParameterChanges;
+    void* inputEvents;
+    void* outputEvents;
+    void* processContext;
+};
+
+// IAudioProcessor
+class IAudioProcessor : public FUnknown {
+public:
+    virtual tresult setBusArrangements(SpeakerArrangement* inputs, int32 numIns,
+                                       SpeakerArrangement* outputs, int32 numOuts) = 0;
+    virtual tresult getBusArrangement(BusDirection dir, int32 index, SpeakerArrangement& arr) = 0;
+    virtual tresult canProcessSampleSize(int32 symbolicSampleSize) = 0;
+    virtual uint32 getLatencySamples() = 0;
+    virtual tresult setupProcessing(ProcessSetup& setup) = 0;
+    virtual tresult setProcessing(uint8 state) = 0;
+    virtual tresult process(ProcessData& data) = 0;
+    virtual uint32 getTailSamples() = 0;
+};
+
 } // namespace Steinberg
 
 typedef Steinberg::IPluginFactory* (*GetFactoryProc)();
@@ -101,9 +222,14 @@ typedef bool (*ExitModuleProc)();
 
 struct PluginState {
     bool loaded = false;
+    bool initialized = false;
+    bool processing = false;
+
     HMODULE module = nullptr;
     Steinberg::IPluginFactory* factory = nullptr;
     Steinberg::IPluginFactory2* factory2 = nullptr;
+    Steinberg::IComponent* component = nullptr;
+    Steinberg::IAudioProcessor* processor = nullptr;
     InitModuleProc initModule = nullptr;
     ExitModuleProc exitModule = nullptr;
 
@@ -111,10 +237,22 @@ struct PluginState {
     char vendor[256] = {0};
     char category[128] = {0};
     char uid[64] = {0};
+    Steinberg::TUID cid = {0};
     int32_t num_classes = 0;
+
+    // Audio config
+    uint32_t sample_rate = 48000;
+    uint32_t block_size = 512;
+    uint32_t num_inputs = 2;
+    uint32_t num_outputs = 2;
 };
 
 static PluginState g_plugin;
+
+// Shared memory state
+static HANDLE g_shm_handle = nullptr;
+static void* g_shm_ptr = nullptr;
+static size_t g_shm_size = 0;
 
 // ============================================================================
 // Helpers
@@ -141,7 +279,6 @@ bool find_vst3_dll(const char* bundle_path, char* dll_path, size_t dll_path_size
     char* ext = strstr(name_without_ext, ".vst3");
     if (ext) *ext = '\0';
 
-    // Try: bundle/Contents/x86_64-win/<name>.vst3
     snprintf(test_path, sizeof(test_path), "%s\\Contents\\x86_64-win\\%s.vst3",
              bundle_path, name_without_ext);
     if (GetFileAttributesA(test_path) != INVALID_FILE_ATTRIBUTES) {
@@ -149,7 +286,6 @@ bool find_vst3_dll(const char* bundle_path, char* dll_path, size_t dll_path_size
         return true;
     }
 
-    // Try single file
     if (strstr(bundle_path, ".dll") || strstr(bundle_path, ".vst3")) {
         DWORD attrs = GetFileAttributesA(bundle_path);
         if (attrs != INVALID_FILE_ATTRIBUTES && !(attrs & FILE_ATTRIBUTE_DIRECTORY)) {
@@ -165,14 +301,64 @@ bool find_vst3_dll(const char* bundle_path, char* dll_path, size_t dll_path_size
 // Plugin Operations
 // ============================================================================
 
+void cleanup_audio() {
+    if (g_plugin.processing && g_plugin.processor) {
+        g_plugin.processor->setProcessing(0);
+        g_plugin.processing = false;
+    }
+
+    if (g_plugin.initialized && g_plugin.component) {
+        g_plugin.component->setActive(0);
+        g_plugin.initialized = false;
+    }
+
+    if (g_shm_ptr) {
+        UnmapViewOfFile(g_shm_ptr);
+        g_shm_ptr = nullptr;
+    }
+    if (g_shm_handle) {
+        CloseHandle(g_shm_handle);
+        g_shm_handle = nullptr;
+    }
+    g_shm_size = 0;
+}
+
+void unload_plugin() {
+    if (!g_plugin.loaded) return;
+
+    printf("[HOST] Unloading plugin\n");
+
+    cleanup_audio();
+
+    if (g_plugin.processor) {
+        g_plugin.processor->release();
+        g_plugin.processor = nullptr;
+    }
+    if (g_plugin.component) {
+        g_plugin.component->terminate();
+        g_plugin.component->release();
+        g_plugin.component = nullptr;
+    }
+    if (g_plugin.factory2) {
+        g_plugin.factory2->release();
+        g_plugin.factory2 = nullptr;
+    }
+    if (g_plugin.factory) {
+        g_plugin.factory->release();
+        g_plugin.factory = nullptr;
+    }
+    if (g_plugin.exitModule) g_plugin.exitModule();
+    if (g_plugin.module) {
+        FreeLibrary(g_plugin.module);
+        g_plugin.module = nullptr;
+    }
+
+    g_plugin = PluginState();
+}
+
 bool load_plugin(const char* path, uint32_t class_index) {
     if (g_plugin.loaded) {
-        printf("[HOST] Plugin already loaded, unloading first\n");
-        if (g_plugin.factory2) g_plugin.factory2->release();
-        if (g_plugin.factory) g_plugin.factory->release();
-        if (g_plugin.exitModule) g_plugin.exitModule();
-        if (g_plugin.module) FreeLibrary(g_plugin.module);
-        g_plugin = PluginState();
+        unload_plugin();
     }
 
     printf("[HOST] Loading plugin: %s\n", path);
@@ -223,26 +409,80 @@ bool load_plugin(const char* path, uint32_t class_index) {
     }
 
     g_plugin.num_classes = g_plugin.factory->countClasses();
+    printf("[HOST] Found %d classes\n", g_plugin.num_classes);
 
-    if (class_index < (uint32_t)g_plugin.num_classes) {
-        if (g_plugin.factory2) {
-            Steinberg::PClassInfo2 info;
-            if (g_plugin.factory2->getClassInfo2(class_index, &info) == Steinberg::kResultOk) {
-                strncpy(g_plugin.name, info.name, sizeof(g_plugin.name) - 1);
-                strncpy(g_plugin.category, info.subCategories, sizeof(g_plugin.category) - 1);
-                if (info.vendor[0]) {
-                    strncpy(g_plugin.vendor, info.vendor, sizeof(g_plugin.vendor) - 1);
+    // Find the Audio Module Class (processor)
+    bool found = false;
+    for (int32_t i = 0; i < g_plugin.num_classes && !found; i++) {
+        Steinberg::PClassInfo info;
+        if (g_plugin.factory->getClassInfo(i, &info) == Steinberg::kResultOk) {
+            printf("[HOST] Class %d: name='%s', category='%s'\n", i, info.name, info.category);
+            if (strcmp(info.category, "Audio Module Class") == 0) {
+                if (class_index == 0) {
+                    memcpy(&g_plugin.cid, &info.cid, sizeof(Steinberg::TUID));
+                    strncpy(g_plugin.name, info.name, sizeof(g_plugin.name) - 1);
+                    strncpy(g_plugin.category, info.category, sizeof(g_plugin.category) - 1);
+                    tuid_to_string(info.cid, g_plugin.uid);
+                    found = true;
+                    printf("[HOST] Using class %d: %s\n", i, info.name);
                 }
-                tuid_to_string(info.cid, g_plugin.uid);
-            }
-        } else {
-            Steinberg::PClassInfo info;
-            if (g_plugin.factory->getClassInfo(class_index, &info) == Steinberg::kResultOk) {
-                strncpy(g_plugin.name, info.name, sizeof(g_plugin.name) - 1);
-                strncpy(g_plugin.category, info.category, sizeof(g_plugin.category) - 1);
-                tuid_to_string(info.cid, g_plugin.uid);
+                class_index--;
             }
         }
+    }
+
+    if (!found) {
+        printf("[HOST] ERROR: No Audio Module Class found\n");
+        unload_plugin();
+        return false;
+    }
+
+    // Create component instance
+    Steinberg::FUnknown* unknown = nullptr;
+    Steinberg::tresult result = g_plugin.factory->createInstance(g_plugin.cid, Steinberg::FUnknown_iid,
+                                          (void**)&unknown);
+    printf("[HOST] createInstance(FUnknown) result=%d, ptr=%p\n", result, unknown);
+
+    if (result != Steinberg::kResultOk || !unknown) {
+        printf("[HOST] ERROR: Failed to create component instance\n");
+        unload_plugin();
+        return false;
+    }
+
+    // Get IComponent interface via QueryInterface on the FUnknown
+    result = unknown->queryInterface(Steinberg::IComponent_iid, (void**)&g_plugin.component);
+    printf("[HOST] queryInterface(IComponent) result=%d, ptr=%p\n", result, g_plugin.component);
+
+    if (result != Steinberg::kResultOk || !g_plugin.component) {
+        // The object might already be IComponent without needing QueryInterface
+        // In VST3, many implementations return the interface directly
+        printf("[HOST] QueryInterface failed, trying direct cast\n");
+        g_plugin.component = reinterpret_cast<Steinberg::IComponent*>(unknown);
+    } else {
+        // QueryInterface succeeded, release the original FUnknown reference
+        unknown->release();
+    }
+
+    // Initialize component
+    result = g_plugin.component->initialize(nullptr);
+    printf("[HOST] component->initialize() result=%d\n", result);
+    if (result != Steinberg::kResultOk) {
+        printf("[HOST] ERROR: Failed to initialize component\n");
+        unload_plugin();
+        return false;
+    }
+
+    // Get audio processor interface - try via the FUnknown first since that seemed to work
+    // The same object typically implements both IComponent and IAudioProcessor
+    Steinberg::FUnknown* component_as_unknown = reinterpret_cast<Steinberg::FUnknown*>(g_plugin.component);
+    result = component_as_unknown->queryInterface(Steinberg::IAudioProcessor_iid,
+                                            (void**)&g_plugin.processor);
+    printf("[HOST] queryInterface(IAudioProcessor) result=%d, ptr=%p\n", result, g_plugin.processor);
+
+    if (result != Steinberg::kResultOk || !g_plugin.processor) {
+        // QueryInterface failed - we can still load the plugin but can't do audio processing
+        printf("[HOST] WARNING: Could not get IAudioProcessor - audio will be passthrough only\n");
+        g_plugin.processor = nullptr;
     }
 
     g_plugin.loaded = true;
@@ -251,17 +491,165 @@ bool load_plugin(const char* path, uint32_t class_index) {
     return true;
 }
 
-void unload_plugin() {
-    if (!g_plugin.loaded) return;
+bool init_audio(const CmdInitAudio* cmd) {
+    if (!g_plugin.loaded) {
+        printf("[HOST] ERROR: No plugin loaded\n");
+        return false;
+    }
 
-    printf("[HOST] Unloading plugin\n");
+    printf("[HOST] Initializing audio: %uHz, %u samples, %u in, %u out\n",
+           cmd->sample_rate, cmd->block_size, cmd->num_inputs, cmd->num_outputs);
+    printf("[HOST] SHM name: %s\n", cmd->shm_name);
 
-    if (g_plugin.factory2) g_plugin.factory2->release();
-    if (g_plugin.factory) g_plugin.factory->release();
-    if (g_plugin.exitModule) g_plugin.exitModule();
-    if (g_plugin.module) FreeLibrary(g_plugin.module);
+    cleanup_audio();
 
-    g_plugin = PluginState();
+    g_plugin.sample_rate = cmd->sample_rate;
+    g_plugin.block_size = cmd->block_size;
+    g_plugin.num_inputs = cmd->num_inputs;
+    g_plugin.num_outputs = cmd->num_outputs;
+
+    // Open the file (created by Linux client, accessed via Wine's Z: drive)
+    // The path is like "Z:\tmp\rack-wine-audio-12345"
+    g_shm_size = RACK_WINE_SHM_SIZE(cmd->num_inputs, cmd->num_outputs, cmd->block_size);
+
+    HANDLE file_handle = CreateFileA(
+        cmd->shm_name,
+        GENERIC_READ | GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        NULL,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL,
+        NULL);
+
+    if (file_handle == INVALID_HANDLE_VALUE) {
+        printf("[HOST] ERROR: Failed to open file '%s' (%lu)\n",
+               cmd->shm_name, GetLastError());
+        return false;
+    }
+
+    // Create file mapping on the file
+    g_shm_handle = CreateFileMappingA(file_handle, NULL, PAGE_READWRITE, 0, (DWORD)g_shm_size, NULL);
+    if (!g_shm_handle) {
+        printf("[HOST] ERROR: Failed to create file mapping (%lu)\n", GetLastError());
+        CloseHandle(file_handle);
+        return false;
+    }
+
+    g_shm_ptr = MapViewOfFile(g_shm_handle, FILE_MAP_ALL_ACCESS, 0, 0, g_shm_size);
+    if (!g_shm_ptr) {
+        printf("[HOST] ERROR: Failed to map shared memory (%lu)\n", GetLastError());
+        CloseHandle(g_shm_handle);
+        CloseHandle(file_handle);
+        g_shm_handle = nullptr;
+        return false;
+    }
+
+    // We can close the file handle now - the mapping keeps it open
+    CloseHandle(file_handle);
+
+    printf("[HOST] Shared memory mapped: %zu bytes\n", g_shm_size);
+
+    // Setup bus arrangements (stereo in/out)
+    if (g_plugin.processor) {
+        Steinberg::SpeakerArrangement inArr = Steinberg::kStereo;
+        Steinberg::SpeakerArrangement outArr = Steinberg::kStereo;
+        g_plugin.processor->setBusArrangements(&inArr, 1, &outArr, 1);
+    }
+
+    // Activate buses
+    g_plugin.component->activateBus(Steinberg::kAudio, Steinberg::kInput, 0, 1);
+    g_plugin.component->activateBus(Steinberg::kAudio, Steinberg::kOutput, 0, 1);
+
+    // Setup processing
+    if (g_plugin.processor) {
+        Steinberg::ProcessSetup setup;
+        setup.processMode = 0;  // Realtime
+        setup.symbolicSampleSize = 0;  // 32-bit float
+        setup.maxSamplesPerBlock = cmd->block_size;
+        setup.sampleRate = cmd->sample_rate;
+
+        Steinberg::tresult r = g_plugin.processor->setupProcessing(setup);
+        printf("[HOST] setupProcessing result=%d\n", r);
+    }
+
+    // Activate
+    Steinberg::tresult r = g_plugin.component->setActive(1);
+    printf("[HOST] setActive result=%d\n", r);
+    g_plugin.initialized = true;
+
+    // Start processing
+    if (g_plugin.processor) {
+        r = g_plugin.processor->setProcessing(1);
+        printf("[HOST] setProcessing result=%d\n", r);
+    }
+    g_plugin.processing = true;
+
+    printf("[HOST] Audio initialized\n");
+    return true;
+}
+
+bool process_audio(uint32_t num_samples) {
+    if (!g_plugin.processing || !g_shm_ptr) {
+        return false;
+    }
+
+    RackWineShmHeader* shm = (RackWineShmHeader*)g_shm_ptr;
+
+    // Calculate buffer pointers
+    float* input_base = (float*)((uint8_t*)g_shm_ptr + shm->input_offset);
+    float* output_base = (float*)((uint8_t*)g_shm_ptr + shm->output_offset);
+
+    // If no processor, just copy input to output (passthrough)
+    if (!g_plugin.processor) {
+        uint32_t channels = (shm->num_inputs < shm->num_outputs) ? shm->num_inputs : shm->num_outputs;
+        for (uint32_t ch = 0; ch < channels; ch++) {
+            float* in = input_base + ch * shm->block_size;
+            float* out = output_base + ch * shm->block_size;
+            memcpy(out, in, num_samples * sizeof(float));
+        }
+        for (uint32_t ch = channels; ch < shm->num_outputs; ch++) {
+            float* out = output_base + ch * shm->block_size;
+            memset(out, 0, num_samples * sizeof(float));
+        }
+        return true;
+    }
+
+    // Set up channel pointers
+    float* input_channels[RACK_WINE_MAX_CHANNELS];
+    float* output_channels[RACK_WINE_MAX_CHANNELS];
+
+    for (uint32_t i = 0; i < shm->num_inputs; i++) {
+        input_channels[i] = input_base + i * shm->block_size;
+    }
+    for (uint32_t i = 0; i < shm->num_outputs; i++) {
+        output_channels[i] = output_base + i * shm->block_size;
+    }
+
+    // Setup process data
+    Steinberg::AudioBusBuffers inputs;
+    inputs.numChannels = shm->num_inputs;
+    inputs.silenceFlags = 0;
+    inputs.channelBuffers32 = input_channels;
+
+    Steinberg::AudioBusBuffers outputs;
+    outputs.numChannels = shm->num_outputs;
+    outputs.silenceFlags = 0;
+    outputs.channelBuffers32 = output_channels;
+
+    Steinberg::ProcessData data;
+    memset(&data, 0, sizeof(data));
+    data.processMode = 0;  // Realtime
+    data.symbolicSampleSize = 0;  // 32-bit
+    data.numSamples = num_samples;
+    data.numInputs = 1;
+    data.numOutputs = 1;
+    data.inputs = &inputs;
+    data.outputs = &outputs;
+
+    // Process
+    Steinberg::tresult result = g_plugin.processor->process(data);
+
+    return result == Steinberg::kResultOk;
 }
 
 // ============================================================================
@@ -288,11 +676,8 @@ bool send_response(SOCKET client, uint32_t status, const void* payload, uint32_t
 }
 
 bool handle_command(SOCKET client, const RackWineHeader* header, const uint8_t* payload) {
-    printf("[HOST] Command: %u, payload: %u bytes\n", header->command, header->payload_size);
-
     switch (header->command) {
         case CMD_PING: {
-            printf("[HOST] PING\n");
             return send_response(client, STATUS_OK, nullptr, 0);
         }
 
@@ -320,9 +705,31 @@ bool handle_command(SOCKET client, const RackWineHeader* header, const uint8_t* 
             strncpy(info.category, g_plugin.category, sizeof(info.category) - 1);
             strncpy(info.uid, g_plugin.uid, sizeof(info.uid) - 1);
             info.num_params = 0;
-            info.num_audio_inputs = 2;
-            info.num_audio_outputs = 2;
+            info.num_audio_inputs = g_plugin.num_inputs;
+            info.num_audio_outputs = g_plugin.num_outputs;
             return send_response(client, STATUS_OK, &info, sizeof(info));
+        }
+
+        case CMD_INIT_AUDIO: {
+            if (header->payload_size < sizeof(CmdInitAudio)) {
+                return send_response(client, STATUS_INVALID_PARAM, nullptr, 0);
+            }
+            const CmdInitAudio* cmd = (const CmdInitAudio*)payload;
+            bool ok = init_audio(cmd);
+            return send_response(client, ok ? STATUS_OK : STATUS_ERROR, nullptr, 0);
+        }
+
+        case CMD_PROCESS_AUDIO: {
+            if (!g_plugin.processing) {
+                return send_response(client, STATUS_NOT_INITIALIZED, nullptr, 0);
+            }
+            uint32_t num_samples = g_plugin.block_size;
+            if (header->payload_size >= sizeof(CmdProcessAudio)) {
+                const CmdProcessAudio* cmd = (const CmdProcessAudio*)payload;
+                num_samples = cmd->num_samples;
+            }
+            bool ok = process_audio(num_samples);
+            return send_response(client, ok ? STATUS_OK : STATUS_ERROR, nullptr, 0);
         }
 
         case CMD_SHUTDOWN: {
@@ -344,7 +751,6 @@ int run_server() {
         return 1;
     }
 
-    // Create TCP socket
     SOCKET server_socket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (server_socket == INVALID_SOCKET) {
         printf("[HOST] Failed to create socket (%d)\n", WSAGetLastError());
@@ -352,15 +758,13 @@ int run_server() {
         return 1;
     }
 
-    // Allow address reuse
     int opt = 1;
     setsockopt(server_socket, SOL_SOCKET, SO_REUSEADDR, (const char*)&opt, sizeof(opt));
 
-    // Try ports in range until one works
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);  // 127.0.0.1 only
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
 
     int port = 0;
     for (int p = RACK_WINE_PORT_BASE; p <= RACK_WINE_PORT_MAX; p++) {
@@ -372,31 +776,27 @@ int run_server() {
     }
 
     if (port == 0) {
-        printf("[HOST] Failed to bind to any port in range %d-%d\n",
-               RACK_WINE_PORT_BASE, RACK_WINE_PORT_MAX);
+        printf("[HOST] Failed to bind to any port\n");
         closesocket(server_socket);
         WSACleanup();
         return 1;
     }
 
     if (listen(server_socket, 1) == SOCKET_ERROR) {
-        printf("[HOST] Listen failed (%d)\n", WSAGetLastError());
+        printf("[HOST] Listen failed\n");
         closesocket(server_socket);
         WSACleanup();
         return 1;
     }
 
-    // Print port for client to connect
     printf("PORT=%d\n", port);
     fflush(stdout);
 
     printf("[HOST] Listening on 127.0.0.1:%d\n", port);
-    printf("[HOST] Waiting for connection...\n");
 
-    // Accept one client
     SOCKET client_socket = accept(server_socket, nullptr, nullptr);
     if (client_socket == INVALID_SOCKET) {
-        printf("[HOST] Accept failed (%d)\n", WSAGetLastError());
+        printf("[HOST] Accept failed\n");
         closesocket(server_socket);
         WSACleanup();
         return 1;
@@ -404,45 +804,27 @@ int run_server() {
 
     printf("[HOST] Client connected\n");
 
-    // Command loop
     bool running = true;
     while (running) {
         RackWineHeader header;
         int received = recv(client_socket, (char*)&header, sizeof(header), MSG_WAITALL);
 
-        if (received <= 0) {
-            printf("[HOST] Client disconnected\n");
-            break;
-        }
-
-        if (received != sizeof(header)) {
-            printf("[HOST] Incomplete header (%d bytes)\n", received);
-            break;
-        }
-
-        if (header.magic != RACK_WINE_MAGIC) {
-            printf("[HOST] Invalid magic: 0x%08X\n", header.magic);
-            break;
-        }
-
-        if (header.version != RACK_WINE_PROTOCOL_VERSION) {
-            printf("[HOST] Protocol version mismatch: %u\n", header.version);
-            break;
-        }
+        if (received <= 0) break;
+        if (received != sizeof(header)) break;
+        if (header.magic != RACK_WINE_MAGIC) break;
+        if (header.version != RACK_WINE_PROTOCOL_VERSION) break;
 
         uint8_t* payload = nullptr;
         if (header.payload_size > 0) {
             payload = new uint8_t[header.payload_size];
             received = recv(client_socket, (char*)payload, header.payload_size, MSG_WAITALL);
             if (received != (int)header.payload_size) {
-                printf("[HOST] Incomplete payload\n");
                 delete[] payload;
                 break;
             }
         }
 
         running = handle_command(client_socket, &header, payload);
-
         delete[] payload;
     }
 
@@ -455,14 +837,9 @@ int run_server() {
     return 0;
 }
 
-// ============================================================================
-// Main
-// ============================================================================
-
 int main(int argc, char* argv[]) {
     (void)argc;
     (void)argv;
-
-    printf("=== rack-wine-host v0.2 ===\n\n");
+    printf("=== rack-wine-host v0.3 ===\n\n");
     return run_server();
 }

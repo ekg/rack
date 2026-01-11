@@ -127,6 +127,64 @@ typedef struct {
 #define RACK_WINE_PORT_BASE 47100
 #define RACK_WINE_PORT_MAX  47199
 
+// ============================================================================
+// Shared Memory for Audio
+// ============================================================================
+
+// Shared memory name template - %d is replaced with host PID
+#define RACK_WINE_SHM_NAME "/rack-wine-audio-%d"
+
+// Maximum supported configuration
+#define RACK_WINE_MAX_CHANNELS 8
+#define RACK_WINE_MAX_BLOCK_SIZE 4096
+
+// Shared memory header
+typedef struct {
+    uint32_t magic;              // RACK_WINE_SHM_MAGIC
+    uint32_t version;            // Protocol version
+    uint32_t num_inputs;         // Number of input channels
+    uint32_t num_outputs;        // Number of output channels
+    uint32_t block_size;         // Current block size
+    uint32_t sample_rate;        // Sample rate (as uint32)
+
+    // Synchronization
+    volatile uint32_t host_ready;    // Host has processed, output ready
+    volatile uint32_t client_ready;  // Client has written input, ready to process
+
+    // Buffer offsets (from start of shared memory)
+    uint32_t input_offset;       // Offset to input buffers
+    uint32_t output_offset;      // Offset to output buffers
+
+    // Reserved for future use
+    uint32_t reserved[4];
+} RackWineShmHeader;
+
+#define RACK_WINE_SHM_MAGIC 0x52574153  // 'RWAS' - Rack Wine Audio Shm
+
+// Calculate shared memory size needed
+// Layout: [Header][Input ch0][Input ch1]...[Output ch0][Output ch1]...
+#define RACK_WINE_SHM_SIZE(num_in, num_out, block_size) \
+    (sizeof(RackWineShmHeader) + \
+     ((num_in) + (num_out)) * (block_size) * sizeof(float))
+
+// CMD_INIT_AUDIO payload - initialize audio processing
+typedef struct {
+    uint32_t sample_rate;
+    uint32_t block_size;
+    uint32_t num_inputs;
+    uint32_t num_outputs;
+    char shm_name[64];           // Shared memory name
+} CmdInitAudio;
+
+// CMD_PROCESS_AUDIO payload - trigger processing
+typedef struct {
+    uint32_t num_samples;        // Samples to process (may be < block_size)
+} CmdProcessAudio;
+
+// Add new commands
+#define CMD_INIT_AUDIO    20     // Initialize audio with shared memory
+#define CMD_PROCESS_AUDIO 21     // Process audio block
+
 #ifdef __cplusplus
 }
 #endif
