@@ -28,6 +28,9 @@ enum RackWineCommand {
     CMD_SEND_MIDI = 11,     // Send MIDI events
     CMD_GET_STATE = 12,     // Get plugin state
     CMD_SET_STATE = 13,     // Set plugin state
+    CMD_OPEN_EDITOR = 14,   // Open plugin GUI editor
+    CMD_CLOSE_EDITOR = 15,  // Close plugin GUI editor
+    CMD_GET_EDITOR_SIZE = 16, // Get editor window size
     CMD_SHUTDOWN = 99,      // Shutdown host
 };
 
@@ -120,6 +123,19 @@ typedef struct {
     uint32_t sample_offset;
     uint8_t data[4];        // MIDI bytes (status, data1, data2, 0)
 } MidiEvent;
+
+// Response: Editor info (for CMD_OPEN_EDITOR)
+typedef struct {
+    uint32_t x11_window_id; // X11 window ID for embedding (0 if failed)
+    uint32_t width;         // Editor width in pixels
+    uint32_t height;        // Editor height in pixels
+} RespEditorInfo;
+
+// Response: Editor size (for CMD_GET_EDITOR_SIZE)
+typedef struct {
+    uint32_t width;
+    uint32_t height;
+} RespEditorSize;
 
 #pragma pack(pop)
 

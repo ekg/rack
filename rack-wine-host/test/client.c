@@ -443,8 +443,39 @@ int main(int argc, char* argv[]) {
     }
     printf("  OK\n\n");
 
-    // Test 9: SHUTDOWN
-    printf("Test 9: SHUTDOWN\n");
+    // Test 9: GUI Editor
+    printf("Test 9: GUI Editor\n");
+    {
+        // Open editor
+        if (send_command(CMD_OPEN_EDITOR, NULL, 0) < 0) { result = 1; goto cleanup; }
+        if (recv_response(&resp, payload_buf, sizeof(payload_buf)) < 0) { result = 1; goto cleanup; }
+        if (resp.status != STATUS_OK) {
+            printf("  FAILED to open editor (status=%u)\n", resp.status);
+            // Not a fatal error - plugin may not have GUI
+            printf("  (Plugin may not have GUI)\n");
+        } else {
+            RespEditorInfo* editor_info = (RespEditorInfo*)payload_buf;
+            printf("  Editor opened: window=0x%x, size=%ux%u\n",
+                   editor_info->x11_window_id, editor_info->width, editor_info->height);
+
+            // Get editor size
+            if (send_command(CMD_GET_EDITOR_SIZE, NULL, 0) < 0) { result = 1; goto cleanup; }
+            if (recv_response(&resp, payload_buf, sizeof(payload_buf)) < 0) { result = 1; goto cleanup; }
+            if (resp.status == STATUS_OK) {
+                RespEditorSize* size = (RespEditorSize*)payload_buf;
+                printf("  Editor size: %ux%u\n", size->width, size->height);
+            }
+
+            // Close editor
+            if (send_command(CMD_CLOSE_EDITOR, NULL, 0) < 0) { result = 1; goto cleanup; }
+            if (recv_response(&resp, payload_buf, sizeof(payload_buf)) < 0) { result = 1; goto cleanup; }
+            printf("  Editor closed\n");
+        }
+    }
+    printf("  OK\n\n");
+
+    // Test 10: SHUTDOWN
+    printf("Test 10: SHUTDOWN\n");
     if (send_command(CMD_SHUTDOWN, NULL, 0) < 0) { result = 1; goto cleanup; }
     if (recv_response(&resp, payload_buf, sizeof(payload_buf)) < 0) { result = 1; goto cleanup; }
     printf("  OK\n\n");

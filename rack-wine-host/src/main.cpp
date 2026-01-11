@@ -391,6 +391,90 @@ public:
     virtual tresult notify(void* message) = 0;
 };
 
+// ============================================================================
+// GUI interfaces
+// ============================================================================
+
+// ViewRect structure
+struct ViewRect {
+    int32 left;
+    int32 top;
+    int32 right;
+    int32 bottom;
+
+    int32 getWidth() const { return right - left; }
+    int32 getHeight() const { return bottom - top; }
+};
+
+// Forward declare
+class IPlugView;
+
+// IPlugFrame {367FAF01-AFA9-4693-8D4D-A2A0ED0882A3}
+// COM bytes: 01 AF 7F 36  A9 AF  93 46  8D 4D A2 A0 ED 08 82 A3
+static const TUID IPlugFrame_iid = {
+    0x01, 0xAF, 0x7F, 0x36, 0xA9, 0xAF, 0x93, 0x46,
+    0x8D, 0x4D, 0xA2, 0xA0, 0xED, 0x08, 0x82, 0xA3
+};
+
+class IPlugFrame : public FUnknown {
+public:
+    virtual tresult resizeView(IPlugView* view, ViewRect* newSize) = 0;
+};
+
+// IPlugView {5BC32507-D060-49EA-A615-1B522B755B29}
+// COM bytes: 07 25 C3 5B  60 D0  EA 49  A6 15 1B 52 2B 75 5B 29
+static const TUID IPlugView_iid = {
+    0x07, 0x25, 0xC3, 0x5B, 0x60, 0xD0, 0xEA, 0x49,
+    0xA6, 0x15, 0x1B, 0x52, 0x2B, 0x75, 0x5B, 0x29
+};
+
+class IPlugView : public FUnknown {
+public:
+    virtual tresult isPlatformTypeSupported(const char* type) = 0;
+    virtual tresult attached(void* parent, const char* type) = 0;
+    virtual tresult removed() = 0;
+    virtual tresult onWheel(float distance) = 0;
+    virtual tresult onKeyDown(char16 key, int16 keyCode, int16 modifiers) = 0;
+    virtual tresult onKeyUp(char16 key, int16 keyCode, int16 modifiers) = 0;
+    virtual tresult getSize(ViewRect* size) = 0;
+    virtual tresult onSize(ViewRect* newSize) = 0;
+    virtual tresult onFocus(uint8 state) = 0;
+    virtual tresult setFrame(IPlugFrame* frame) = 0;
+    virtual tresult canResize() = 0;
+    virtual tresult checkSizeConstraint(ViewRect* rect) = 0;
+};
+
+// Platform type for Windows
+static const char* kPlatformTypeHWND = "HWND";
+
+// Simple IPlugFrame implementation for resize callbacks
+class HostPlugFrame : public IPlugFrame {
+public:
+    IPlugView* view = nullptr;
+    HWND hwnd = nullptr;
+
+    tresult queryInterface(const TUID&, void** obj) override {
+        *obj = nullptr;
+        return kNoInterface;
+    }
+    uint32 addRef() override { return 1; }
+    uint32 release() override { return 1; }
+
+    tresult resizeView(IPlugView* v, ViewRect* newSize) override {
+        if (hwnd && newSize) {
+            // Resize the window
+            SetWindowPos(hwnd, nullptr, 0, 0,
+                         newSize->getWidth(), newSize->getHeight(),
+                         SWP_NOMOVE | SWP_NOZORDER);
+            // Notify the view
+            if (view) {
+                view->onSize(newSize);
+            }
+        }
+        return kResultOk;
+    }
+};
+
 } // namespace Steinberg
 
 typedef Steinberg::IPluginFactory* (*GetFactoryProc)();
@@ -427,6 +511,12 @@ struct PluginState {
     uint32_t block_size = 512;
     uint32_t num_inputs = 2;
     uint32_t num_outputs = 2;
+
+    // Editor state
+    Steinberg::IPlugView* view = nullptr;
+    Steinberg::HostPlugFrame plugFrame;
+    HWND editorHwnd = nullptr;
+    bool editorOpen = false;
 };
 
 static PluginState g_plugin;
@@ -509,10 +599,16 @@ void cleanup_audio() {
     g_shm_size = 0;
 }
 
+void unload_plugin();  // Forward declaration
+void close_editor();   // Forward declaration
+
 void unload_plugin() {
     if (!g_plugin.loaded) return;
 
     printf("[HOST] Unloading plugin\n");
+
+    // Close editor first
+    close_editor();
 
     cleanup_audio();
 
@@ -742,6 +838,202 @@ bool load_plugin(const char* path, uint32_t class_index) {
     printf("[HOST] Plugin loaded: %s by %s\n", g_plugin.name, g_plugin.vendor);
 
     return true;
+}
+
+// ============================================================================
+// Editor (GUI) Functions
+// ============================================================================
+
+// Window procedure for editor window
+static LRESULT CALLBACK EditorWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    switch (msg) {
+        case WM_CLOSE:
+            // Don't destroy, just hide
+            ShowWindow(hwnd, SW_HIDE);
+            return 0;
+        case WM_DESTROY:
+            return 0;
+        default:
+            return DefWindowProcW(hwnd, msg, wParam, lParam);
+    }
+}
+
+// Register editor window class
+static bool g_editor_class_registered = false;
+static const wchar_t* EDITOR_CLASS_NAME = L"RackWineEditor";
+
+static bool register_editor_class() {
+    if (g_editor_class_registered) return true;
+
+    WNDCLASSEXW wc = {0};
+    wc.cbSize = sizeof(WNDCLASSEXW);
+    wc.style = CS_HREDRAW | CS_VREDRAW;
+    wc.lpfnWndProc = EditorWndProc;
+    wc.hInstance = GetModuleHandle(nullptr);
+    wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+    wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+    wc.lpszClassName = EDITOR_CLASS_NAME;
+
+    if (!RegisterClassExW(&wc)) {
+        printf("[HOST] ERROR: Failed to register editor window class\n");
+        return false;
+    }
+
+    g_editor_class_registered = true;
+    return true;
+}
+
+bool open_editor(RespEditorInfo* resp) {
+    memset(resp, 0, sizeof(*resp));
+
+    if (!g_plugin.loaded || !g_plugin.controller) {
+        printf("[HOST] ERROR: No plugin loaded or no controller\n");
+        return false;
+    }
+
+    if (g_plugin.editorOpen) {
+        printf("[HOST] Editor already open\n");
+        // Return existing window info
+        if (g_plugin.editorHwnd) {
+            // Get X11 window ID from Wine window
+            // Wine exposes this through a special property
+            resp->x11_window_id = (uint32_t)(uintptr_t)g_plugin.editorHwnd;
+            Steinberg::ViewRect rect;
+            if (g_plugin.view && g_plugin.view->getSize(&rect) == Steinberg::kResultOk) {
+                resp->width = rect.getWidth();
+                resp->height = rect.getHeight();
+            }
+        }
+        return true;
+    }
+
+    // Create the view
+    void* rawView = g_plugin.controller->createView("editor");
+    if (!rawView) {
+        printf("[HOST] ERROR: createView returned null\n");
+        return false;
+    }
+
+    // Query for IPlugView interface
+    Steinberg::FUnknown* viewUnknown = reinterpret_cast<Steinberg::FUnknown*>(rawView);
+    Steinberg::tresult result = viewUnknown->queryInterface(Steinberg::IPlugView_iid,
+                                                            (void**)&g_plugin.view);
+    if (result != Steinberg::kResultOk || !g_plugin.view) {
+        printf("[HOST] ERROR: Failed to get IPlugView interface\n");
+        viewUnknown->release();
+        return false;
+    }
+    viewUnknown->release();
+
+    // Check if HWND is supported
+    result = g_plugin.view->isPlatformTypeSupported(Steinberg::kPlatformTypeHWND);
+    if (result != Steinberg::kResultOk) {
+        printf("[HOST] ERROR: Plugin doesn't support HWND platform\n");
+        g_plugin.view->release();
+        g_plugin.view = nullptr;
+        return false;
+    }
+
+    // Get initial size
+    Steinberg::ViewRect rect = {0, 0, 800, 600};  // Default size
+    g_plugin.view->getSize(&rect);
+    int width = rect.getWidth();
+    int height = rect.getHeight();
+    printf("[HOST] Editor size: %dx%d\n", width, height);
+
+    // Register window class
+    if (!register_editor_class()) {
+        g_plugin.view->release();
+        g_plugin.view = nullptr;
+        return false;
+    }
+
+    // Create editor window
+    g_plugin.editorHwnd = CreateWindowExW(
+        0,
+        EDITOR_CLASS_NAME,
+        L"Plugin Editor",
+        WS_OVERLAPPEDWINDOW,
+        CW_USEDEFAULT, CW_USEDEFAULT,
+        width, height,
+        nullptr, nullptr,
+        GetModuleHandle(nullptr),
+        nullptr
+    );
+
+    if (!g_plugin.editorHwnd) {
+        printf("[HOST] ERROR: Failed to create editor window\n");
+        g_plugin.view->release();
+        g_plugin.view = nullptr;
+        return false;
+    }
+
+    // Set up the plug frame
+    g_plugin.plugFrame.view = g_plugin.view;
+    g_plugin.plugFrame.hwnd = g_plugin.editorHwnd;
+    g_plugin.view->setFrame(&g_plugin.plugFrame);
+
+    // Attach the view to the window
+    result = g_plugin.view->attached((void*)g_plugin.editorHwnd, Steinberg::kPlatformTypeHWND);
+    if (result != Steinberg::kResultOk) {
+        printf("[HOST] ERROR: Failed to attach view to window (result=%d)\n", result);
+        DestroyWindow(g_plugin.editorHwnd);
+        g_plugin.editorHwnd = nullptr;
+        g_plugin.view->release();
+        g_plugin.view = nullptr;
+        return false;
+    }
+
+    // Show the window
+    ShowWindow(g_plugin.editorHwnd, SW_SHOW);
+    UpdateWindow(g_plugin.editorHwnd);
+
+    g_plugin.editorOpen = true;
+
+    // Return the window handle as X11 window ID
+    // Wine windows are X11 windows, so the HWND can be used directly
+    // (Wine internally maps HWNDs to X11 window IDs)
+    resp->x11_window_id = (uint32_t)(uintptr_t)g_plugin.editorHwnd;
+    resp->width = width;
+    resp->height = height;
+
+    printf("[HOST] Editor opened, HWND=%p\n", g_plugin.editorHwnd);
+    return true;
+}
+
+void close_editor() {
+    if (!g_plugin.editorOpen) return;
+
+    if (g_plugin.view) {
+        g_plugin.view->removed();
+        g_plugin.view->setFrame(nullptr);
+        g_plugin.view->release();
+        g_plugin.view = nullptr;
+    }
+
+    if (g_plugin.editorHwnd) {
+        DestroyWindow(g_plugin.editorHwnd);
+        g_plugin.editorHwnd = nullptr;
+    }
+
+    g_plugin.editorOpen = false;
+    printf("[HOST] Editor closed\n");
+}
+
+bool get_editor_size(RespEditorSize* resp) {
+    memset(resp, 0, sizeof(*resp));
+
+    if (!g_plugin.view) {
+        return false;
+    }
+
+    Steinberg::ViewRect rect;
+    if (g_plugin.view->getSize(&rect) == Steinberg::kResultOk) {
+        resp->width = rect.getWidth();
+        resp->height = rect.getHeight();
+        return true;
+    }
+    return false;
 }
 
 bool init_audio(const CmdInitAudio* cmd) {
@@ -1123,6 +1415,29 @@ bool handle_command(SOCKET client, const RackWineHeader* header, const uint8_t* 
             }
             bool ok = process_audio(num_samples);
             return send_response(client, ok ? STATUS_OK : STATUS_ERROR, nullptr, 0);
+        }
+
+        case CMD_OPEN_EDITOR: {
+            if (!g_plugin.loaded) {
+                return send_response(client, STATUS_NOT_LOADED, nullptr, 0);
+            }
+            RespEditorInfo resp;
+            bool ok = open_editor(&resp);
+            return send_response(client, ok ? STATUS_OK : STATUS_ERROR, &resp, sizeof(resp));
+        }
+
+        case CMD_CLOSE_EDITOR: {
+            close_editor();
+            return send_response(client, STATUS_OK, nullptr, 0);
+        }
+
+        case CMD_GET_EDITOR_SIZE: {
+            if (!g_plugin.view) {
+                return send_response(client, STATUS_ERROR, nullptr, 0);
+            }
+            RespEditorSize resp;
+            bool ok = get_editor_size(&resp);
+            return send_response(client, ok ? STATUS_OK : STATUS_ERROR, &resp, sizeof(resp));
         }
 
         case CMD_SHUTDOWN: {
