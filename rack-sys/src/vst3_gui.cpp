@@ -16,6 +16,18 @@
 
 using namespace Steinberg;
 
+// X11 error handler to prevent crashes from non-fatal X errors
+// Some plugins may trigger X errors that can be safely ignored
+static int x11_error_handler(Display* display, XErrorEvent* error) {
+    char error_text[256];
+    XGetErrorText(display, error->error_code, error_text, sizeof(error_text));
+    fprintf(stderr, "X11 error (ignored): %s (request: %d, minor: %d)\n",
+            error_text, error->request_code, error->minor_code);
+    return 0;  // Return 0 to continue execution
+}
+
+static bool g_error_handler_installed = false;
+
 // Forward declaration - defined in vst3_instance.cpp
 extern "C" void* rack_vst3_plugin_get_edit_controller(RackVST3Plugin* plugin);
 
@@ -208,6 +220,12 @@ RackVST3Gui* rack_vst3_gui_create(RackVST3Plugin* plugin) {
         return nullptr;
     }
 
+    // Install X11 error handler to prevent crashes from plugin X errors
+    if (!g_error_handler_installed) {
+        XSetErrorHandler(x11_error_handler);
+        g_error_handler_installed = true;
+    }
+
     // Get the view's preferred size
     ViewRect viewRect;
     if (gui->view->getSize(&viewRect) == kResultTrue) {
@@ -292,12 +310,14 @@ int rack_vst3_gui_show(RackVST3Gui* gui, const char* title) {
     const char* window_title = title ? title : "VST3 Plugin";
     XStoreName(gui->display, gui->window, window_title);
 
-    // Also set _NET_WM_NAME for modern window managers
+    // Also set _NET_WM_NAME for modern window managers (if atoms are available)
     Atom net_wm_name = XInternAtom(gui->display, "_NET_WM_NAME", False);
     Atom utf8_string = XInternAtom(gui->display, "UTF8_STRING", False);
-    XChangeProperty(gui->display, gui->window, net_wm_name, utf8_string, 8,
-                   PropModeReplace, reinterpret_cast<const unsigned char*>(window_title),
-                   strlen(window_title));
+    if (net_wm_name != None && utf8_string != None) {
+        XChangeProperty(gui->display, gui->window, net_wm_name, utf8_string, 8,
+                       PropModeReplace, reinterpret_cast<const unsigned char*>(window_title),
+                       strlen(window_title));
+    }
 
     // Map (show) the window
     XMapWindow(gui->display, gui->window);
