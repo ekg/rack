@@ -51,10 +51,13 @@ log_info "[1/7] Installing dependencies..."
 case $DISTRO in
     ubuntu|pop)
         # Ubuntu 24.04+ has PipeWire by default
+        # wine32 replaced by wine32:i386 or just use wine package
+        sudo dpkg --add-architecture i386
         sudo apt update
         sudo apt install -y \
+            wine \
             wine64 \
-            wine32 \
+            libwine:i386 \
             winetricks \
             libpipewire-0.3-dev \
             build-essential \

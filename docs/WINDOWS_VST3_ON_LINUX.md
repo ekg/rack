@@ -21,11 +21,15 @@ Expected latency: **3-11ms** (professional quality)
 Ubuntu 24.04 ships with PipeWire as the default audio system.
 
 ```bash
+# Enable 32-bit architecture (needed for some VST3 plugins)
+sudo dpkg --add-architecture i386
+
 # Core dependencies (PipeWire already installed on 24.04)
 sudo apt update
 sudo apt install -y \
+    wine \
     wine64 \
-    wine32 \
+    libwine:i386 \
     winetricks \
     libpipewire-0.3-dev \
     build-essential \
