@@ -95,6 +95,10 @@ pub use au::{AudioUnitGui, AudioUnitPlugin as Plugin, AudioUnitScanner as Scanne
 ))]
 pub use vst3::{Vst3Plugin as Plugin, Vst3Scanner as Scanner};
 
+// VST3 GUI support on Linux
+#[cfg(all(vst3_sdk, target_os = "linux"))]
+pub use vst3::Vst3Gui;
+
 /// Prelude module for convenient imports
 pub mod prelude {
     pub use crate::{
@@ -116,4 +120,8 @@ pub mod prelude {
         not(target_os = "visionos")
     ))]
     pub use crate::{Plugin, Scanner};
+
+    // VST3 GUI on Linux
+    #[cfg(all(vst3_sdk, target_os = "linux"))]
+    pub use crate::Vst3Gui;
 }

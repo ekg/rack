@@ -2,6 +2,9 @@
 //!
 //! This example demonstrates how to create and display a plugin's GUI.
 //!
+//! **IMPORTANT**: This example only works on macOS. On other platforms,
+//! it will print a message and exit.
+//!
 //! **IMPORTANT**: This example must be run on the main thread. On macOS, the
 //! main thread is required for all GUI operations (AppKit requirement).
 //!
@@ -19,11 +22,22 @@
 //! cargo run --example plugin_gui
 //! ```
 
+#[cfg(not(target_os = "macos"))]
+fn main() {
+    eprintln!("This example only works on macOS (requires AudioUnit and AppKit).");
+    eprintln!("On Linux, try: cargo run --example vst3_gui");
+    std::process::exit(1);
+}
+
+#[cfg(target_os = "macos")]
 use rack::prelude::*;
+#[cfg(target_os = "macos")]
 use std::sync::{Arc, Mutex};
+#[cfg(target_os = "macos")]
 use std::time::Duration;
 
 // Core Foundation and AppKit bindings for running the macOS event loop
+#[cfg(target_os = "macos")]
 #[link(name = "CoreFoundation", kind = "framework")]
 extern "C" {
     fn CFRunLoopRunInMode(
@@ -35,9 +49,11 @@ extern "C" {
     static kCFRunLoopDefaultMode: CFRunLoopMode;
 }
 
+#[cfg(target_os = "macos")]
 type CFRunLoopMode = *const std::ffi::c_void;
 
 /// Process macOS main event loop for a short duration
+#[cfg(target_os = "macos")]
 fn process_main_event_loop(duration_ms: u64) {
     unsafe {
         CFRunLoopRunInMode(
@@ -50,6 +66,7 @@ fn process_main_event_loop(duration_ms: u64) {
 
 /// Run the main event loop indefinitely
 /// This is required for GUI windows to actually appear and be interactive
+#[cfg(target_os = "macos")]
 fn run_event_loop() {
     println!("Starting event loop...");
 
@@ -71,6 +88,7 @@ fn run_event_loop() {
     }
 }
 
+#[cfg(target_os = "macos")]
 fn main() -> Result<()> {
     println!("AudioUnit Plugin GUI Example");
     println!("=============================\n");

@@ -1214,3 +1214,17 @@ int rack_vst3_plugin_send_midi(
 
     return RACK_VST3_OK;
 }
+
+// ============================================================================
+// GUI Support API
+// ============================================================================
+
+void* rack_vst3_plugin_get_edit_controller(RackVST3Plugin* plugin) {
+    if (!plugin || !plugin->controller) {
+        return nullptr;
+    }
+
+    // Return raw pointer - caller must not release it
+    // The controller lifetime is tied to the plugin
+    return static_cast<void*>(plugin->controller.get());
+}

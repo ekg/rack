@@ -496,6 +496,103 @@ extern "C" {
         events: *const RackVST3MidiEvent,
         event_count: u32,
     ) -> c_int;
+
+    // ============================================================================
+    // GUI API (Linux/X11)
+    // ============================================================================
+
+    /// Create GUI for a plugin (synchronous)
+    ///
+    /// # Safety
+    ///
+    /// - `plugin` must be a valid pointer returned by `rack_vst3_plugin_new`
+    /// - Plugin must be initialized
+    /// - Must be called from the main thread
+    /// - Returns NULL if plugin doesn't support GUI or creation fails
+    #[cfg(target_os = "linux")]
+    pub fn rack_vst3_gui_create(plugin: *mut RackVST3Plugin) -> *mut RackVST3Gui;
+
+    /// Free GUI
+    ///
+    /// # Safety
+    ///
+    /// - `gui` must be a valid pointer returned by `rack_vst3_gui_create`
+    /// - `gui` must not be used after this call
+    /// - Must be called from the main thread
+    /// - If `gui` is NULL, this function does nothing (safe no-op)
+    #[cfg(target_os = "linux")]
+    pub fn rack_vst3_gui_free(gui: *mut RackVST3Gui);
+
+    /// Show GUI window
+    ///
+    /// # Safety
+    ///
+    /// - `gui` must be a valid pointer returned by `rack_vst3_gui_create`
+    /// - `title` must be a valid null-terminated C string, or NULL for default
+    /// - Must be called from the main thread
+    #[cfg(target_os = "linux")]
+    pub fn rack_vst3_gui_show(gui: *mut RackVST3Gui, title: *const c_char) -> c_int;
+
+    /// Hide GUI window
+    ///
+    /// # Safety
+    ///
+    /// - `gui` must be a valid pointer returned by `rack_vst3_gui_create`
+    /// - Must be called from the main thread
+    #[cfg(target_os = "linux")]
+    pub fn rack_vst3_gui_hide(gui: *mut RackVST3Gui) -> c_int;
+
+    /// Check if GUI is visible
+    ///
+    /// # Safety
+    ///
+    /// - `gui` must be a valid pointer returned by `rack_vst3_gui_create`
+    #[cfg(target_os = "linux")]
+    pub fn rack_vst3_gui_is_visible(gui: *mut RackVST3Gui) -> c_int;
+
+    /// Get GUI size
+    ///
+    /// # Safety
+    ///
+    /// - `gui` must be a valid pointer returned by `rack_vst3_gui_create`
+    /// - `width` and `height` must be valid pointers
+    #[cfg(target_os = "linux")]
+    pub fn rack_vst3_gui_get_size(gui: *mut RackVST3Gui, width: *mut u32, height: *mut u32)
+        -> c_int;
+
+    /// Process pending GUI events
+    ///
+    /// # Returns
+    ///
+    /// - Number of events processed (>= 0)
+    /// - Negative error code on failure
+    ///
+    /// # Safety
+    ///
+    /// - `gui` must be a valid pointer returned by `rack_vst3_gui_create`
+    /// - Must be called from the main thread
+    #[cfg(target_os = "linux")]
+    pub fn rack_vst3_gui_pump_events(gui: *mut RackVST3Gui) -> c_int;
+
+    /// Get X11 window ID
+    ///
+    /// # Safety
+    ///
+    /// - `gui` must be a valid pointer returned by `rack_vst3_gui_create`
+    #[cfg(target_os = "linux")]
+    pub fn rack_vst3_gui_get_window_id(gui: *mut RackVST3Gui) -> std::os::raw::c_ulong;
+
+    /// Get IEditController from plugin
+    ///
+    /// # Safety
+    ///
+    /// - `plugin` must be a valid pointer returned by `rack_vst3_plugin_new`
+    /// - Returns NULL if plugin has no controller
+    /// - The returned pointer must not be freed by the caller
+    #[cfg(target_os = "linux")]
+    pub fn rack_vst3_plugin_get_edit_controller(
+        plugin: *mut RackVST3Plugin,
+    ) -> *mut std::ffi::c_void;
 }
 
 // MIDI event struct (matches C layout exactly)

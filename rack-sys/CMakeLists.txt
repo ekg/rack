@@ -50,6 +50,11 @@ if(HAVE_VST3_SDK)
         src/vst3_instance.cpp
     )
 
+    # Add GUI support on Linux (X11)
+    if(UNIX AND NOT APPLE)
+        list(APPEND RACK_VST3_SOURCES src/vst3_gui.cpp)
+    endif()
+
     # VST3 SDK base sources (required for FUID, FUnknown, etc.)
     set(VST3_SDK_SOURCES
         # Base library - provides FUID, FUnknown, interface IIDs
@@ -142,6 +147,14 @@ endif()
 # Linux platform-specific settings (for VST3)
 if(UNIX AND NOT APPLE)
     target_link_libraries(rack_sys PUBLIC ${CMAKE_DL_LIBS})
+
+    # X11 for VST3 GUI support
+    if(HAVE_VST3_SDK)
+        find_package(X11 REQUIRED)
+        target_include_directories(rack_sys PRIVATE ${X11_INCLUDE_DIR})
+        target_link_libraries(rack_sys PUBLIC ${X11_LIBRARIES})
+        message(STATUS "X11 found: ${X11_LIBRARIES}")
+    endif()
 endif()
 
 # Compiler warnings

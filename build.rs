@@ -95,6 +95,10 @@ fn main() {
             println!("cargo:rustc-link-lib=stdc++");
             // Link dynamic loader (needed for VST3 module loading)
             println!("cargo:rustc-link-lib=dl");
+            // Link X11 for VST3 GUI support
+            if have_vst3 {
+                println!("cargo:rustc-link-lib=X11");
+            }
         }
         "windows" => {
             // Windows uses static linking by default, no extra libs needed for C++

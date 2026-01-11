@@ -72,6 +72,18 @@ impl Vst3Plugin {
         }
     }
 
+    /// Get raw pointer to the underlying C++ plugin instance
+    ///
+    /// This is used internally by the GUI module to create a GUI for the plugin.
+    ///
+    /// # Safety
+    ///
+    /// The returned pointer is valid as long as this `Vst3Plugin` instance exists.
+    /// Do not free or otherwise manipulate this pointer directly.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn as_ptr(&mut self) -> *mut ffi::RackVST3Plugin {
+        self.inner.as_ptr()
+    }
 }
 
 impl Drop for Vst3Plugin {

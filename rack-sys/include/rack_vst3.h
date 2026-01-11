@@ -283,6 +283,64 @@ int rack_vst3_plugin_send_midi(
     uint32_t event_count
 );
 
+// ============================================================================
+// GUI API (Linux/X11)
+// ============================================================================
+
+// GUI callback for async operations
+// user_data: pointer passed to create_async
+// gui: GUI handle on success, NULL on failure
+// error_code: 0 on success, negative error code on failure
+typedef void (*RackVST3GuiCallback)(void* user_data, RackVST3Gui* gui, int error_code);
+
+// Create GUI for a plugin (synchronous)
+// plugin: initialized plugin instance
+// Returns GUI handle or NULL on error
+// Thread-safety: Must be called from the main thread
+RackVST3Gui* rack_vst3_gui_create(RackVST3Plugin* plugin);
+
+// Free GUI
+// Thread-safety: Must be called from the main thread
+void rack_vst3_gui_free(RackVST3Gui* gui);
+
+// Show GUI window
+// title: window title (can be NULL for default)
+// Returns 0 on success, negative error code on failure
+// Thread-safety: Must be called from the main thread
+int rack_vst3_gui_show(RackVST3Gui* gui, const char* title);
+
+// Hide GUI window
+// Returns 0 on success, negative error code on failure
+// Thread-safety: Must be called from the main thread
+int rack_vst3_gui_hide(RackVST3Gui* gui);
+
+// Check if GUI is visible
+// Returns 1 if visible, 0 if not visible
+// Thread-safety: Can be called from any thread
+int rack_vst3_gui_is_visible(RackVST3Gui* gui);
+
+// Get GUI size
+// width, height: output parameters for GUI dimensions
+// Returns 0 on success, negative error code on failure
+// Thread-safety: Can be called from any thread
+int rack_vst3_gui_get_size(RackVST3Gui* gui, uint32_t* width, uint32_t* height);
+
+// Process pending GUI events (call regularly from main thread)
+// Returns number of events processed, or negative error code
+// Thread-safety: Must be called from the main thread
+int rack_vst3_gui_pump_events(RackVST3Gui* gui);
+
+// Get X11 window ID (for embedding in host UI)
+// Returns window ID or 0 if not available
+// Thread-safety: Can be called from any thread after creation
+unsigned long rack_vst3_gui_get_window_id(RackVST3Gui* gui);
+
+// Get IEditController from plugin (for internal use by GUI)
+// Returns opaque pointer to IEditController or NULL if not available
+// The returned pointer must not be freed by the caller.
+// Thread-safety: Can be called from any thread
+void* rack_vst3_plugin_get_edit_controller(RackVST3Plugin* plugin);
+
 #ifdef __cplusplus
 }
 #endif
