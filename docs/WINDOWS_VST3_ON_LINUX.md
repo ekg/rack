@@ -32,6 +32,7 @@ sudo apt install -y \
     libwine:i386 \
     winetricks \
     libpipewire-0.3-dev \
+    libjack-jackd2-dev \
     build-essential \
     git \
     flatpak
