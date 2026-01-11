@@ -79,6 +79,10 @@ pub mod au;
 ))]
 pub mod vst3;
 
+// Wine host for Windows VST3 plugins on Linux
+#[cfg(target_os = "linux")]
+pub mod wine_host;
+
 // Re-export the default scanner and plugin types for the platform
 // On Apple platforms, default to AudioUnit (better integration, GUI support)
 #[cfg(target_vendor = "apple")]

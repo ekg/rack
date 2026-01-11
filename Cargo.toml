@@ -22,6 +22,7 @@ exclude = [
 smallvec = "1.13"
 thiserror = "2.0"
 cpal = { version = "0.15", optional = true }
+libc = "0.2"
 
 [build-dependencies]
 cmake = "0.1"
@@ -60,6 +61,10 @@ required-features = ["vst3"]
 name = "vst3_processor"
 path = "examples/vst3_processor.rs"
 required-features = ["vst3"]
+
+[[example]]
+name = "wine_vst3"
+path = "examples/wine_vst3.rs"
 
 [profile.dev]
 opt-level = 2  # Audio needs some optimization even in debug
