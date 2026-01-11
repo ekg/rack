@@ -239,15 +239,71 @@ int main(int argc, char* argv[]) {
         printf("  FAILED (status=%u)\n", resp.status);
         result = 1; goto cleanup;
     }
+    uint32_t num_params = 0;
     if (resp.payload_size >= sizeof(RespPluginInfo)) {
         RespPluginInfo* info = (RespPluginInfo*)payload_buf;
         printf("  Name:     %s\n", info->name);
         printf("  Vendor:   %s\n", info->vendor);
+        printf("  Params:   %u\n", info->num_params);
+        num_params = info->num_params;
     }
     printf("  OK\n\n");
 
-    // Test 4: Create shared memory and INIT_AUDIO
-    printf("Test 4: INIT_AUDIO (shared memory)\n");
+    // Test 4: PARAMETERS
+    printf("Test 4: PARAMETERS\n");
+    if (num_params > 0) {
+        // Get info for first parameter
+        uint32_t param_index = 0;
+        if (send_command(CMD_GET_PARAM_INFO, &param_index, sizeof(param_index)) < 0) { result = 1; goto cleanup; }
+        if (recv_response(&resp, payload_buf, sizeof(payload_buf)) < 0) { result = 1; goto cleanup; }
+        if (resp.status != STATUS_OK) {
+            printf("  GET_PARAM_INFO FAILED (status=%u)\n", resp.status);
+            result = 1; goto cleanup;
+        }
+        RespParamInfo* pinfo = (RespParamInfo*)payload_buf;
+        printf("  Param 0: id=%u, name='%s', default=%.3f\n",
+               pinfo->id, pinfo->name, pinfo->default_value);
+
+        // Get current value
+        uint32_t param_id = pinfo->id;
+        if (send_command(CMD_GET_PARAM, &param_id, sizeof(param_id)) < 0) { result = 1; goto cleanup; }
+        if (recv_response(&resp, payload_buf, sizeof(payload_buf)) < 0) { result = 1; goto cleanup; }
+        if (resp.status != STATUS_OK) {
+            printf("  GET_PARAM FAILED (status=%u)\n", resp.status);
+            result = 1; goto cleanup;
+        }
+        CmdParam* param_resp = (CmdParam*)payload_buf;
+        double original_value = param_resp->value;
+        printf("  Current value: %.3f\n", original_value);
+
+        // Set to a new value
+        CmdParam set_cmd;
+        set_cmd.param_id = param_id;
+        set_cmd.value = (original_value > 0.5) ? 0.25 : 0.75;
+        if (send_command(CMD_SET_PARAM, &set_cmd, sizeof(set_cmd)) < 0) { result = 1; goto cleanup; }
+        if (recv_response(&resp, payload_buf, sizeof(payload_buf)) < 0) { result = 1; goto cleanup; }
+        if (resp.status != STATUS_OK) {
+            printf("  SET_PARAM FAILED (status=%u)\n", resp.status);
+            result = 1; goto cleanup;
+        }
+
+        // Verify the new value
+        if (send_command(CMD_GET_PARAM, &param_id, sizeof(param_id)) < 0) { result = 1; goto cleanup; }
+        if (recv_response(&resp, payload_buf, sizeof(payload_buf)) < 0) { result = 1; goto cleanup; }
+        param_resp = (CmdParam*)payload_buf;
+        printf("  After set: %.3f (expected %.3f)\n", param_resp->value, set_cmd.value);
+
+        // Restore original value
+        set_cmd.value = original_value;
+        if (send_command(CMD_SET_PARAM, &set_cmd, sizeof(set_cmd)) < 0) { result = 1; goto cleanup; }
+        if (recv_response(&resp, payload_buf, sizeof(payload_buf)) < 0) { result = 1; goto cleanup; }
+    } else {
+        printf("  No parameters available\n");
+    }
+    printf("  OK\n\n");
+
+    // Test 5: Create shared memory and INIT_AUDIO
+    printf("Test 5: INIT_AUDIO (shared memory)\n");
     {
         uint32_t num_inputs = 2;
         uint32_t num_outputs = 2;
@@ -284,8 +340,8 @@ int main(int argc, char* argv[]) {
     }
     printf("  OK\n\n");
 
-    // Test 5: PROCESS_AUDIO
-    printf("Test 5: PROCESS_AUDIO\n");
+    // Test 6: PROCESS_AUDIO
+    printf("Test 6: PROCESS_AUDIO\n");
     {
         uint32_t num_samples = 512;
 
@@ -323,8 +379,8 @@ int main(int argc, char* argv[]) {
     }
     printf("  OK\n\n");
 
-    // Test 6: Multiple process calls (performance test)
-    printf("Test 6: Process 100 blocks\n");
+    // Test 7: Multiple process calls (performance test)
+    printf("Test 7: Process 100 blocks\n");
     {
         uint32_t num_samples = 512;
 
@@ -345,8 +401,8 @@ int main(int argc, char* argv[]) {
     }
     printf("  OK\n\n");
 
-    // Test 7: SHUTDOWN
-    printf("Test 7: SHUTDOWN\n");
+    // Test 8: SHUTDOWN
+    printf("Test 8: SHUTDOWN\n");
     if (send_command(CMD_SHUTDOWN, NULL, 0) < 0) { result = 1; goto cleanup; }
     if (recv_response(&resp, payload_buf, sizeof(payload_buf)) < 0) { result = 1; goto cleanup; }
     printf("  OK\n\n");

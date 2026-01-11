@@ -103,6 +103,13 @@ static const TUID IAudioProcessor_iid = {
     0xA5, 0x69, 0xE7, 0x9D, 0x9A, 0xAE, 0xC3, 0x3D
 };
 
+// IEditController {DCD7BBE3-7742-448D-A874-AACC979C759E}
+// COM bytes: E3 BB D7 DC  42 77  8D 44  A8 74 AA CC 97 9C 75 9E
+static const TUID IEditController_iid = {
+    0xE3, 0xBB, 0xD7, 0xDC, 0x42, 0x77, 0x8D, 0x44,
+    0xA8, 0x74, 0xAA, 0xCC, 0x97, 0x9C, 0x75, 0x9E
+};
+
 // FUnknown {00000000-0000-0000-C000-000000000046}
 // COM bytes: 00 00 00 00  00 00  00 00  C0 00 00 00 00 00 00 46
 static const TUID FUnknown_iid = {
@@ -210,6 +217,60 @@ public:
     virtual uint32 getTailSamples() = 0;
 };
 
+// Parameter info structure
+struct ParameterInfo {
+    uint32 id;
+    char16 title[128];
+    char16 shortTitle[128];
+    char16 units[128];
+    int32 stepCount;
+    double defaultNormalizedValue;
+    int32 unitId;
+    int32 flags;
+};
+
+// Parameter flags
+enum ParameterFlags {
+    kCanAutomate = 1 << 0,
+    kIsReadOnly = 1 << 1,
+    kIsWrapAround = 1 << 2,
+    kIsList = 1 << 3,
+    kIsProgramChange = 1 << 15,
+    kIsBypass = 1 << 16
+};
+
+// IEditController
+class IEditController : public IPluginBase {
+public:
+    virtual tresult setComponentState(void* state) = 0;
+    virtual tresult setState(void* state) = 0;
+    virtual tresult getState(void* state) = 0;
+    virtual int32 getParameterCount() = 0;
+    virtual tresult getParameterInfo(int32 paramIndex, ParameterInfo& info) = 0;
+    virtual tresult getParamStringByValue(uint32 id, double valueNormalized, char16* string) = 0;
+    virtual tresult getParamValueByString(uint32 id, char16* string, double& valueNormalized) = 0;
+    virtual double normalizedParamToPlain(uint32 id, double valueNormalized) = 0;
+    virtual double plainParamToNormalized(uint32 id, double plainValue) = 0;
+    virtual double getParamNormalized(uint32 id) = 0;
+    virtual tresult setParamNormalized(uint32 id, double value) = 0;
+    virtual tresult setComponentHandler(void* handler) = 0;
+    virtual void* createView(const char* name) = 0;
+};
+
+// IConnectionPoint {70A4156F-6E6E-4026-9891-48BFAA60D8D1}
+// COM bytes: 6F 15 A4 70  6E 6E  26 40  98 91 48 BF AA 60 D8 D1
+static const TUID IConnectionPoint_iid = {
+    0x6F, 0x15, 0xA4, 0x70, 0x6E, 0x6E, 0x26, 0x40,
+    0x98, 0x91, 0x48, 0xBF, 0xAA, 0x60, 0xD8, 0xD1
+};
+
+class IConnectionPoint : public FUnknown {
+public:
+    virtual tresult connect(IConnectionPoint* other) = 0;
+    virtual tresult disconnect(IConnectionPoint* other) = 0;
+    virtual tresult notify(void* message) = 0;
+};
+
 } // namespace Steinberg
 
 typedef Steinberg::IPluginFactory* (*GetFactoryProc)();
@@ -230,6 +291,7 @@ struct PluginState {
     Steinberg::IPluginFactory2* factory2 = nullptr;
     Steinberg::IComponent* component = nullptr;
     Steinberg::IAudioProcessor* processor = nullptr;
+    Steinberg::IEditController* controller = nullptr;
     InitModuleProc initModule = nullptr;
     ExitModuleProc exitModule = nullptr;
 
@@ -330,6 +392,11 @@ void unload_plugin() {
 
     cleanup_audio();
 
+    if (g_plugin.controller) {
+        g_plugin.controller->terminate();
+        g_plugin.controller->release();
+        g_plugin.controller = nullptr;
+    }
     if (g_plugin.processor) {
         g_plugin.processor->release();
         g_plugin.processor = nullptr;
@@ -483,6 +550,68 @@ bool load_plugin(const char* path, uint32_t class_index) {
         // QueryInterface failed - we can still load the plugin but can't do audio processing
         printf("[HOST] WARNING: Could not get IAudioProcessor - audio will be passthrough only\n");
         g_plugin.processor = nullptr;
+    }
+
+    // Get edit controller interface for parameters
+    // First try: QueryInterface (for plugins where controller is same object as component)
+    result = component_as_unknown->queryInterface(Steinberg::IEditController_iid,
+                                            (void**)&g_plugin.controller);
+    printf("[HOST] queryInterface(IEditController) result=%d, ptr=%p\n", result, g_plugin.controller);
+
+    if (result != Steinberg::kResultOk || !g_plugin.controller) {
+        // Second try: Get controller class ID and create separate instance
+        printf("[HOST] Trying to get separate controller class...\n");
+        Steinberg::TUID controller_cid;
+        result = g_plugin.component->getControllerClassId(controller_cid);
+        printf("[HOST] getControllerClassId result=%d\n", result);
+
+        if (result == Steinberg::kResultOk) {
+            // Create controller instance
+            Steinberg::FUnknown* ctrl_unknown = nullptr;
+            result = g_plugin.factory->createInstance(controller_cid, Steinberg::FUnknown_iid,
+                                                      (void**)&ctrl_unknown);
+            printf("[HOST] createInstance(controller) result=%d, ptr=%p\n", result, ctrl_unknown);
+
+            if (result == Steinberg::kResultOk && ctrl_unknown) {
+                result = ctrl_unknown->queryInterface(Steinberg::IEditController_iid,
+                                                      (void**)&g_plugin.controller);
+                printf("[HOST] queryInterface(IEditController) on controller result=%d, ptr=%p\n",
+                       result, g_plugin.controller);
+                ctrl_unknown->release();
+            }
+        }
+
+        if (!g_plugin.controller) {
+            printf("[HOST] WARNING: Could not get IEditController - parameters not available\n");
+        }
+    }
+
+    if (g_plugin.controller) {
+        // Initialize the controller
+        result = g_plugin.controller->initialize(nullptr);
+        printf("[HOST] controller->initialize() result=%d\n", result);
+        if (result != Steinberg::kResultOk) {
+            printf("[HOST] WARNING: Controller initialization failed\n");
+        }
+
+        // Connect component and controller via IConnectionPoint
+        // This is required for separate processor/controller plugins (e.g., JUCE)
+        Steinberg::FUnknown* component_unknown = reinterpret_cast<Steinberg::FUnknown*>(g_plugin.component);
+        Steinberg::FUnknown* controller_unknown = reinterpret_cast<Steinberg::FUnknown*>(g_plugin.controller);
+
+        Steinberg::IConnectionPoint* comp_conn = nullptr;
+        Steinberg::IConnectionPoint* ctrl_conn = nullptr;
+
+        component_unknown->queryInterface(Steinberg::IConnectionPoint_iid, (void**)&comp_conn);
+        controller_unknown->queryInterface(Steinberg::IConnectionPoint_iid, (void**)&ctrl_conn);
+
+        if (comp_conn && ctrl_conn) {
+            comp_conn->connect(ctrl_conn);
+            ctrl_conn->connect(comp_conn);
+            printf("[HOST] Component/controller connected\n");
+        }
+
+        printf("[HOST] Parameters: %d\n", g_plugin.controller->getParameterCount());
     }
 
     g_plugin.loaded = true;
@@ -704,10 +833,85 @@ bool handle_command(SOCKET client, const RackWineHeader* header, const uint8_t* 
             strncpy(info.vendor, g_plugin.vendor, sizeof(info.vendor) - 1);
             strncpy(info.category, g_plugin.category, sizeof(info.category) - 1);
             strncpy(info.uid, g_plugin.uid, sizeof(info.uid) - 1);
-            info.num_params = 0;
+            info.num_params = g_plugin.controller ? g_plugin.controller->getParameterCount() : 0;
             info.num_audio_inputs = g_plugin.num_inputs;
             info.num_audio_outputs = g_plugin.num_outputs;
             return send_response(client, STATUS_OK, &info, sizeof(info));
+        }
+
+        case CMD_GET_PARAM_COUNT: {
+            if (!g_plugin.loaded) {
+                return send_response(client, STATUS_NOT_LOADED, nullptr, 0);
+            }
+            uint32_t count = g_plugin.controller ? g_plugin.controller->getParameterCount() : 0;
+            return send_response(client, STATUS_OK, &count, sizeof(count));
+        }
+
+        case CMD_GET_PARAM_INFO: {
+            if (!g_plugin.loaded) {
+                return send_response(client, STATUS_NOT_LOADED, nullptr, 0);
+            }
+            if (!g_plugin.controller) {
+                return send_response(client, STATUS_ERROR, nullptr, 0);
+            }
+            if (header->payload_size < sizeof(uint32_t)) {
+                return send_response(client, STATUS_INVALID_PARAM, nullptr, 0);
+            }
+            uint32_t param_index = *(const uint32_t*)payload;
+
+            Steinberg::ParameterInfo pinfo;
+            if (g_plugin.controller->getParameterInfo(param_index, pinfo) != Steinberg::kResultOk) {
+                return send_response(client, STATUS_INVALID_PARAM, nullptr, 0);
+            }
+
+            RespParamInfo resp = {0};
+            resp.id = pinfo.id;
+            // Convert UTF-16 title to ASCII
+            for (int i = 0; i < 127 && pinfo.title[i]; i++) {
+                resp.name[i] = (char)pinfo.title[i];
+            }
+            // Convert UTF-16 units to ASCII
+            for (int i = 0; i < 31 && pinfo.units[i]; i++) {
+                resp.units[i] = (char)pinfo.units[i];
+            }
+            resp.default_value = pinfo.defaultNormalizedValue;
+            resp.min_value = 0.0;  // Normalized range is always 0-1
+            resp.max_value = 1.0;
+            resp.flags = pinfo.flags;
+            return send_response(client, STATUS_OK, &resp, sizeof(resp));
+        }
+
+        case CMD_GET_PARAM: {
+            if (!g_plugin.loaded) {
+                return send_response(client, STATUS_NOT_LOADED, nullptr, 0);
+            }
+            if (!g_plugin.controller) {
+                return send_response(client, STATUS_ERROR, nullptr, 0);
+            }
+            if (header->payload_size < sizeof(uint32_t)) {
+                return send_response(client, STATUS_INVALID_PARAM, nullptr, 0);
+            }
+            uint32_t param_id = *(const uint32_t*)payload;
+            double value = g_plugin.controller->getParamNormalized(param_id);
+            CmdParam resp;
+            resp.param_id = param_id;
+            resp.value = value;
+            return send_response(client, STATUS_OK, &resp, sizeof(resp));
+        }
+
+        case CMD_SET_PARAM: {
+            if (!g_plugin.loaded) {
+                return send_response(client, STATUS_NOT_LOADED, nullptr, 0);
+            }
+            if (!g_plugin.controller) {
+                return send_response(client, STATUS_ERROR, nullptr, 0);
+            }
+            if (header->payload_size < sizeof(CmdParam)) {
+                return send_response(client, STATUS_INVALID_PARAM, nullptr, 0);
+            }
+            const CmdParam* cmd = (const CmdParam*)payload;
+            Steinberg::tresult result = g_plugin.controller->setParamNormalized(cmd->param_id, cmd->value);
+            return send_response(client, result == Steinberg::kResultOk ? STATUS_OK : STATUS_ERROR, nullptr, 0);
         }
 
         case CMD_INIT_AUDIO: {
