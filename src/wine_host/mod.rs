@@ -182,6 +182,31 @@ impl WineClient {
         Ok(())
     }
 
+    /// Get parameter changes from GUI
+    fn get_param_changes(&mut self) -> Result<Vec<protocol::ParamChangeEvent>> {
+        let payload = self.request(HostCommand::GetParamChanges, &[])?;
+        if payload.len() < 4 {
+            return Ok(Vec::new());
+        }
+
+        let num_changes = u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]) as usize;
+        let mut changes = Vec::with_capacity(num_changes);
+
+        // Each change is 12 bytes (4 bytes param_id + 8 bytes value)
+        let mut offset = 4;
+        for _ in 0..num_changes {
+            if offset + 12 > payload.len() {
+                break;
+            }
+            if let Some(change) = protocol::ParamChangeEvent::from_bytes(&payload[offset..]) {
+                changes.push(change);
+            }
+            offset += 12;
+        }
+
+        Ok(changes)
+    }
+
     /// Shutdown the host
     fn shutdown(&mut self) -> Result<()> {
         self.request(HostCommand::Shutdown, &[])?;
@@ -441,6 +466,16 @@ impl WineVst3Plugin {
     /// Close the plugin editor
     pub fn close_editor(&mut self) -> Result<()> {
         self.client.close_editor()
+    }
+
+    /// Get parameter changes from GUI since last poll
+    ///
+    /// Returns a list of (param_id, value) tuples for parameters that were
+    /// changed by the user in the plugin GUI. Call this regularly (e.g., every
+    /// audio buffer or on a timer) to stay in sync with GUI changes.
+    pub fn get_param_changes(&mut self) -> Result<Vec<(u32, f64)>> {
+        let changes = self.client.get_param_changes()?;
+        Ok(changes.into_iter().map(|c| (c.param_id, c.value)).collect())
     }
 
     #[cfg(target_os = "linux")]

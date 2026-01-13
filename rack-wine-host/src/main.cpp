@@ -475,6 +475,109 @@ public:
     }
 };
 
+// ============================================================================
+// IComponentHandler - receives parameter changes from plugin GUI
+// ============================================================================
+
+// IComponentHandler {93A0BEA3-0BD0-45db-8E89-0B0CC1E46AC6}
+// COM bytes: A3 BE A0 93  D0 0B  db 45  8E 89 0B 0C C1 E4 6A C6
+static const TUID IComponentHandler_iid = {
+    0xA3, 0xBE, 0xA0, 0x93, 0xD0, 0x0B, 0xdb, 0x45,
+    0x8E, 0x89, 0x0B, 0x0C, 0xC1, 0xE4, 0x6A, 0xC6
+};
+
+class IComponentHandler : public FUnknown {
+public:
+    virtual tresult beginEdit(uint32 id) = 0;
+    virtual tresult performEdit(uint32 id, double valueNormalized) = 0;
+    virtual tresult endEdit(uint32 id) = 0;
+    virtual tresult restartComponent(int32 flags) = 0;
+};
+
+// Parameter change record
+struct ParamChange {
+    uint32 param_id;
+    double value;
+};
+
+// Maximum pending parameter changes
+static const int MAX_PARAM_CHANGES = 256;
+
+// Host implementation of IComponentHandler
+// Captures parameter changes from the plugin GUI
+class HostComponentHandler : public IComponentHandler {
+public:
+    // Circular buffer for parameter changes
+    ParamChange changes[MAX_PARAM_CHANGES];
+    volatile int write_index = 0;
+    volatile int read_index = 0;
+
+    tresult queryInterface(const TUID& iid, void** obj) override {
+        if (memcmp(iid.data, IComponentHandler_iid.data, sizeof(TUID)) == 0) {
+            *obj = static_cast<IComponentHandler*>(this);
+            addRef();
+            return kResultOk;
+        }
+        if (memcmp(iid.data, FUnknown_iid.data, sizeof(TUID)) == 0) {
+            *obj = static_cast<FUnknown*>(this);
+            addRef();
+            return kResultOk;
+        }
+        *obj = nullptr;
+        return kNoInterface;
+    }
+    uint32 addRef() override { return 1; }  // Static lifetime
+    uint32 release() override { return 1; }
+
+    tresult beginEdit(uint32 id) override {
+        // Called when user starts adjusting a parameter in GUI
+        return kResultOk;
+    }
+
+    tresult performEdit(uint32 id, double valueNormalized) override {
+        // Called when parameter value changes in GUI
+        // Store in circular buffer
+        int next = (write_index + 1) % MAX_PARAM_CHANGES;
+        if (next != read_index) {  // Don't overflow
+            changes[write_index].param_id = id;
+            changes[write_index].value = valueNormalized;
+            write_index = next;
+        }
+        return kResultOk;
+    }
+
+    tresult endEdit(uint32 id) override {
+        // Called when user stops adjusting a parameter in GUI
+        return kResultOk;
+    }
+
+    tresult restartComponent(int32 flags) override {
+        // Plugin requests host to restart (e.g., after latency change)
+        return kResultOk;
+    }
+
+    // Get pending changes count
+    int getPendingCount() const {
+        int w = write_index;
+        int r = read_index;
+        if (w >= r) return w - r;
+        return MAX_PARAM_CHANGES - r + w;
+    }
+
+    // Get next pending change, returns false if none
+    bool getNextChange(ParamChange* out) {
+        if (read_index == write_index) return false;
+        *out = changes[read_index];
+        read_index = (read_index + 1) % MAX_PARAM_CHANGES;
+        return true;
+    }
+
+    // Clear all pending changes
+    void clear() {
+        read_index = write_index;
+    }
+};
+
 } // namespace Steinberg
 
 typedef Steinberg::IPluginFactory* (*GetFactoryProc)();
@@ -517,6 +620,9 @@ struct PluginState {
     Steinberg::HostPlugFrame plugFrame;
     HWND editorHwnd = nullptr;
     bool editorOpen = false;
+
+    // Component handler for parameter change notifications from GUI
+    Steinberg::HostComponentHandler componentHandler;
 };
 
 static PluginState g_plugin;
@@ -813,6 +919,10 @@ bool load_plugin(const char* path, uint32_t class_index) {
         if (result != Steinberg::kResultOk) {
             printf("[HOST] WARNING: Controller initialization failed\n");
         }
+
+        // Set component handler to receive parameter change callbacks from GUI
+        result = g_plugin.controller->setComponentHandler(&g_plugin.componentHandler);
+        printf("[HOST] setComponentHandler result=%d\n", result);
 
         // Connect component and controller via IConnectionPoint
         // This is required for separate processor/controller plugins (e.g., JUCE)
@@ -1438,6 +1548,27 @@ bool handle_command(SOCKET client, const RackWineHeader* header, const uint8_t* 
             RespEditorSize resp;
             bool ok = get_editor_size(&resp);
             return send_response(client, ok ? STATUS_OK : STATUS_ERROR, &resp, sizeof(resp));
+        }
+
+        case CMD_GET_PARAM_CHANGES: {
+            // Get pending parameter changes from GUI
+            int count = g_plugin.componentHandler.getPendingCount();
+
+            // Build response: header + array of changes
+            size_t resp_size = sizeof(RespParamChanges) + count * sizeof(ParamChangeEvent);
+            uint8_t* resp_buf = (uint8_t*)alloca(resp_size);
+            RespParamChanges* resp = (RespParamChanges*)resp_buf;
+            ParamChangeEvent* events = (ParamChangeEvent*)(resp_buf + sizeof(RespParamChanges));
+
+            resp->num_changes = 0;
+            Steinberg::ParamChange change;
+            while (g_plugin.componentHandler.getNextChange(&change) && resp->num_changes < (uint32_t)count) {
+                events[resp->num_changes].param_id = change.param_id;
+                events[resp->num_changes].value = change.value;
+                resp->num_changes++;
+            }
+
+            return send_response(client, STATUS_OK, resp_buf, sizeof(RespParamChanges) + resp->num_changes * sizeof(ParamChangeEvent));
         }
 
         case CMD_SHUTDOWN: {

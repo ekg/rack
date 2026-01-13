@@ -33,6 +33,7 @@ pub enum HostCommand {
     OpenEditor = 14,
     CloseEditor = 15,
     GetEditorSize = 16,
+    GetParamChanges = 17,
     InitAudio = 20,
     ProcessAudio = 21,
     Shutdown = 99,
@@ -325,6 +326,28 @@ impl RespEditorInfo {
             x11_window_id: u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]),
             width: u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]),
             height: u32::from_le_bytes([buf[8], buf[9], buf[10], buf[11]]),
+        })
+    }
+}
+
+/// Parameter change event from GUI
+#[derive(Debug, Clone, Copy)]
+pub struct ParamChangeEvent {
+    pub param_id: u32,
+    pub value: f64,
+}
+
+impl ParamChangeEvent {
+    pub fn from_bytes(buf: &[u8]) -> Option<Self> {
+        if buf.len() < 12 {
+            return None;
+        }
+        Some(Self {
+            param_id: u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]),
+            value: f64::from_le_bytes([
+                buf[4], buf[5], buf[6], buf[7],
+                buf[8], buf[9], buf[10], buf[11],
+            ]),
         })
     }
 }

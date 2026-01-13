@@ -31,6 +31,7 @@ enum RackWineCommand {
     CMD_OPEN_EDITOR = 14,   // Open plugin GUI editor
     CMD_CLOSE_EDITOR = 15,  // Close plugin GUI editor
     CMD_GET_EDITOR_SIZE = 16, // Get editor window size
+    CMD_GET_PARAM_CHANGES = 17, // Get parameter changes from GUI
     CMD_SHUTDOWN = 99,      // Shutdown host
 };
 
@@ -136,6 +137,18 @@ typedef struct {
     uint32_t width;
     uint32_t height;
 } RespEditorSize;
+
+// Response: Parameter changes from GUI (for CMD_GET_PARAM_CHANGES)
+// Returns array of parameter changes since last poll
+typedef struct {
+    uint32_t param_id;
+    double value;           // Normalized 0.0-1.0
+} ParamChangeEvent;
+
+typedef struct {
+    uint32_t num_changes;
+    // Followed by num_changes * ParamChangeEvent
+} RespParamChanges;
 
 #pragma pack(pop)
 

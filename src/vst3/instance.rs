@@ -80,9 +80,62 @@ impl Vst3Plugin {
     ///
     /// The returned pointer is valid as long as this `Vst3Plugin` instance exists.
     /// Do not free or otherwise manipulate this pointer directly.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     pub(crate) fn as_ptr(&mut self) -> *mut ffi::RackVST3Plugin {
         self.inner.as_ptr()
+    }
+
+    /// Get parameter changes from plugin GUI since last call
+    ///
+    /// Returns a list of (param_id, value) tuples for parameters that were
+    /// changed by the user in the plugin GUI. Call this regularly (e.g., every
+    /// audio buffer or on a timer) to stay in sync with GUI changes.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// // In your main loop or timer callback:
+    /// for (param_id, value) in plugin.get_param_changes()? {
+    ///     println!("Parameter {} changed to {}", param_id, value);
+    ///     // Update your internal state here
+    /// }
+    /// ```
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    pub fn get_param_changes(&mut self) -> Result<Vec<(u32, f64)>> {
+        unsafe {
+            // First, get the count of pending changes
+            let count = ffi::rack_vst3_plugin_get_param_changes(
+                self.inner.as_ptr(),
+                std::ptr::null_mut(),
+                0,
+            );
+
+            if count < 0 {
+                return Err(map_error(count));
+            }
+
+            if count == 0 {
+                return Ok(Vec::new());
+            }
+
+            // Allocate buffer and get changes
+            let mut changes = vec![ffi::RackVST3ParamChange { param_id: 0, value: 0.0 }; count as usize];
+            let actual = ffi::rack_vst3_plugin_get_param_changes(
+                self.inner.as_ptr(),
+                changes.as_mut_ptr(),
+                count as u32,
+            );
+
+            if actual < 0 {
+                return Err(map_error(actual));
+            }
+
+            // Convert to (param_id, value) tuples
+            Ok(changes.into_iter()
+                .take(actual as usize)
+                .map(|c| (c.param_id, c.value))
+                .collect())
+        }
     }
 }
 

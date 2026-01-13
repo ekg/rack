@@ -341,6 +341,37 @@ unsigned long rack_vst3_gui_get_window_id(RackVST3Gui* gui);
 // Thread-safety: Can be called from any thread
 void* rack_vst3_plugin_get_edit_controller(RackVST3Plugin* plugin);
 
+// ============================================================================
+// Parameter Change Notification API
+// ============================================================================
+
+// Parameter change event (for changes originating from plugin GUI)
+typedef struct {
+    uint32_t param_id;      // Parameter ID
+    double value;           // Normalized value (0.0 to 1.0)
+} RackVST3ParamChange;
+
+// Get parameter changes from plugin GUI since last call
+// This allows the host to sync with parameter changes made by user in plugin GUI.
+//
+// changes: output array for parameter changes (allocated by caller)
+// max_changes: maximum number of changes to return
+// Returns: number of changes written to array, or negative error code
+//
+// Usage pattern:
+//   RackVST3ParamChange changes[64];
+//   int count = rack_vst3_plugin_get_param_changes(plugin, changes, 64);
+//   for (int i = 0; i < count; i++) {
+//       // Handle parameter change: changes[i].param_id, changes[i].value
+//   }
+//
+// Thread-safety: Should be called from the main thread, not during process()
+int rack_vst3_plugin_get_param_changes(
+    RackVST3Plugin* plugin,
+    RackVST3ParamChange* changes,
+    uint32_t max_changes
+);
+
 #ifdef __cplusplus
 }
 #endif

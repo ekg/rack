@@ -593,6 +593,30 @@ extern "C" {
     pub fn rack_vst3_plugin_get_edit_controller(
         plugin: *mut RackVST3Plugin,
     ) -> *mut std::ffi::c_void;
+
+    // ============================================================================
+    // Parameter Change Notification API
+    // ============================================================================
+
+    /// Get parameter changes from plugin GUI since last call
+    ///
+    /// # Returns
+    ///
+    /// - Number of changes written to array (>= 0)
+    /// - Negative error code on failure
+    ///
+    /// # Safety
+    ///
+    /// - `plugin` must be a valid pointer returned by `rack_vst3_plugin_new`
+    /// - `changes` must point to an array with at least `max_changes` elements, or NULL
+    /// - If `changes` is NULL or `max_changes` is 0, only returns the count of pending changes
+    /// - Should be called from the main thread, not during process()
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    pub fn rack_vst3_plugin_get_param_changes(
+        plugin: *mut RackVST3Plugin,
+        changes: *mut RackVST3ParamChange,
+        max_changes: u32,
+    ) -> c_int;
 }
 
 // MIDI event struct (matches C layout exactly)
@@ -604,4 +628,12 @@ pub struct RackVST3MidiEvent {
     pub data1: u8,
     pub data2: u8,
     pub channel: u8,
+}
+
+// Parameter change event struct (for GUI -> host notifications)
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct RackVST3ParamChange {
+    pub param_id: u32,
+    pub value: f64,
 }

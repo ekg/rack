@@ -244,6 +244,101 @@ tresult PLUGIN_API MemoryStream::queryInterface(const TUID _iid, void** obj) {
     return kNoInterface;
 }
 
+// ============================================================================
+// ComponentHandler - receives parameter changes from plugin GUI
+// ============================================================================
+
+// Parameter change event
+struct ParamChangeEvent {
+    ParamID param_id;
+    ParamValue value;
+};
+
+// Maximum pending parameter changes
+static constexpr size_t MAX_PARAM_CHANGES = 256;
+
+// ComponentHandler implementation - captures parameter changes from GUI
+class ComponentHandler : public IComponentHandler {
+public:
+    ComponentHandler() : ref_count_(1), write_index_(0), read_index_(0) {}
+    virtual ~ComponentHandler() = default;
+
+    // IUnknown
+    tresult PLUGIN_API queryInterface(const TUID _iid, void** obj) override {
+        QUERY_INTERFACE(_iid, obj, FUnknown::iid, IComponentHandler)
+        QUERY_INTERFACE(_iid, obj, IComponentHandler::iid, IComponentHandler)
+        *obj = nullptr;
+        return kNoInterface;
+    }
+
+    uint32 PLUGIN_API addRef() override { return ++ref_count_; }
+    uint32 PLUGIN_API release() override {
+        if (--ref_count_ == 0) {
+            delete this;
+            return 0;
+        }
+        return ref_count_;
+    }
+
+    // IComponentHandler
+    tresult PLUGIN_API beginEdit(ParamID id) override {
+        // Called when user starts adjusting a parameter in GUI
+        (void)id;
+        return kResultOk;
+    }
+
+    tresult PLUGIN_API performEdit(ParamID id, ParamValue valueNormalized) override {
+        // Called when parameter value changes in GUI
+        // Store in circular buffer (lock-free for single producer)
+        size_t next = (write_index_ + 1) % MAX_PARAM_CHANGES;
+        if (next != read_index_) {  // Don't overflow
+            changes_[write_index_].param_id = id;
+            changes_[write_index_].value = valueNormalized;
+            write_index_ = next;
+        }
+        return kResultOk;
+    }
+
+    tresult PLUGIN_API endEdit(ParamID id) override {
+        // Called when user stops adjusting a parameter in GUI
+        (void)id;
+        return kResultOk;
+    }
+
+    tresult PLUGIN_API restartComponent(int32 flags) override {
+        // Plugin requests host to restart (e.g., after latency change)
+        (void)flags;
+        return kResultOk;
+    }
+
+    // Get pending changes count
+    size_t getPendingCount() const {
+        size_t w = write_index_;
+        size_t r = read_index_;
+        if (w >= r) return w - r;
+        return MAX_PARAM_CHANGES - r + w;
+    }
+
+    // Get next pending change, returns false if none
+    bool getNextChange(ParamChangeEvent* out) {
+        if (read_index_ == write_index_) return false;
+        *out = changes_[read_index_];
+        read_index_ = (read_index_ + 1) % MAX_PARAM_CHANGES;
+        return true;
+    }
+
+    // Clear all pending changes
+    void clear() {
+        read_index_ = write_index_;
+    }
+
+private:
+    uint32 ref_count_;
+    ParamChangeEvent changes_[MAX_PARAM_CHANGES];
+    volatile size_t write_index_;
+    volatile size_t read_index_;
+};
+
 // Internal plugin state
 struct RackVST3Plugin {
     // Module and factory
@@ -257,6 +352,9 @@ struct RackVST3Plugin {
     // Connection proxy (if component != controller)
     IPtr<IConnectionPoint> component_cp;
     IPtr<IConnectionPoint> controller_cp;
+
+    // Component handler for GUI parameter change notifications
+    IPtr<ComponentHandler> component_handler;
 
     // Plugin info
     std::string path;
@@ -383,6 +481,12 @@ RackVST3Plugin* rack_vst3_plugin_new(const char* path, const char* uid) {
     } else {
         // Component is also the controller (single component architecture)
         plugin->controller = U::cast<IEditController>(plugin->component);
+    }
+
+    // Set up component handler for GUI parameter change notifications
+    if (plugin->controller) {
+        plugin->component_handler = owned(new ComponentHandler());
+        plugin->controller->setComponentHandler(plugin->component_handler);
     }
 
     // Set up connection points if controller is separate
@@ -1227,4 +1331,34 @@ void* rack_vst3_plugin_get_edit_controller(RackVST3Plugin* plugin) {
     // Return raw pointer - caller must not release it
     // The controller lifetime is tied to the plugin
     return static_cast<void*>(plugin->controller.get());
+}
+
+int rack_vst3_plugin_get_param_changes(
+    RackVST3Plugin* plugin,
+    RackVST3ParamChange* changes,
+    uint32_t max_changes
+) {
+    if (!plugin) {
+        return RACK_VST3_ERROR_GENERIC;
+    }
+
+    if (!plugin->component_handler) {
+        return 0;  // No component handler = no changes to report
+    }
+
+    if (!changes || max_changes == 0) {
+        // Just return the count of pending changes
+        return static_cast<int>(plugin->component_handler->getPendingCount());
+    }
+
+    // Retrieve pending changes
+    uint32_t count = 0;
+    ParamChangeEvent event;
+    while (count < max_changes && plugin->component_handler->getNextChange(&event)) {
+        changes[count].param_id = event.param_id;
+        changes[count].value = event.value;
+        count++;
+    }
+
+    return static_cast<int>(count);
 }
