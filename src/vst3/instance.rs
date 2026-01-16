@@ -221,9 +221,9 @@ impl PluginInstance for Vst3Plugin {
         }
 
         // Defense-in-depth: Catch initialization bugs where channel counts are zero
-        // This is technically redundant (covered by checks above) but guards against
-        // future bugs in initialize() that could leave channels at zero
-        if inputs.is_empty() || outputs.is_empty() {
+        // Only check inputs.is_empty() if the plugin expects inputs (instruments may have 0 inputs)
+        // Outputs must always be non-empty since plugins always produce audio
+        if (self.input_channels > 0 && inputs.is_empty()) || outputs.is_empty() {
             return Err(Error::Other("Empty input or output channels".to_string()));
         }
 
